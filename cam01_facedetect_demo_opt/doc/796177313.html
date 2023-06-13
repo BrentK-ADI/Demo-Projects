@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>Bayer: Baseline</title>
+        <link rel="stylesheet" href="styles/site.css" type="text/css" />
+        <META http-equiv="Content-Type" content="text/html; charset=UTF-8">
+    </head>
+
+    <body class="theme-default aui-theme-default">
+        <div id="page">
+            <div id="main" class="aui-page-panel">
+                <div id="main-header">
+                    <div id="breadcrumb-section">
+                        <ol id="breadcrumbs">
+                            <li class="first">
+                                <span><a href="index.html">Optimization by Example</a></span>
+                            </li>
+                                                    <li>
+                                <span><a href="Bayer-Interpolation_796177303.html">Bayer Interpolation</a></span>
+                            </li>
+                                                </ol>
+                    </div>
+                    <h1 id="title-heading" class="pagetitle">
+                                                <span id="title-text">
+                            Bayer: Baseline
+                        </span>
+                    </h1>
+                </div>
+
+                <div id="content" class="view">
+
+                    <div id="main-content" class="wiki-content group">
+                    <h1 id="Bayer:Baseline-ImplementationDetails">Implementation Details</h1><p>Similar to the color correction, prior to performing any optimization, the baseline code for the Bayer demosaicing is reviewed and a baseline runtime established.  The primary code consists of just a single function, <code>bayer_bilinear_demosaicing_crop</code>.</p><h2 id="Bayer:Baseline-bayer_bilinear_demosaicing_crop">bayer_bilinear_demosaicing_crop</h2><p>This function implements the math associated with bilinear interpolation as discussed in the <a href="Bayer-Interpolation_796177303.html">overview</a>.  The iterations over the source image are done row first, with the option of specifying offsets and the output size.  The RGB output is in the RGB565 color format.  The code follows the same logic as the original baseline color correction, determining the correct formula to use based on the least significant bit of x and y indices. The code is well commented, and matches the interpolation figures shown in the overview.</p><div class="code panel pdl" style="border-width: 1px;"><div class="codeContent panelContent pdl">
+<pre class="syntaxhighlighter-pre" data-syntaxhighlighter-params="brush: cpp; gutter: false; theme: Confluence" data-theme="Confluence">void bayer_bilinear_demosaicing_crop(uint8_t *srcimg, uint32_t src_width, uint32_t src_height,
+                                     uint32_t w_offset, uint32_t h_offset, uint16_t *dstimg,
+                                     uint32_t dst_width, uint32_t dst_height)
+{
+    unsigned int r, g, b = 0;
+    int i = 0;
+
+    for (int y = h_offset; y &lt; h_offset + dst_height; y++) {
+        for (int x = w_offset; x &lt; w_offset + dst_width; x++) {
+            if (!(y &amp; 1)) { // Even row (B G B G B G)
+                if (!(x &amp; 1)) { // Even column (B)
+                    r = (srcimg[_i(x - 1, y + 1, src_width, src_height)] + // Top left
+                         srcimg[_i(x + 1, y + 1, src_width, src_height)] + // Top right
+                         srcimg[_i(x - 1, y - 1, src_width, src_height)] + // Bottom left
+                         srcimg[_i(x + 1, y - 1, src_width, src_height)]); // Bottom right
+                    r = r &gt;&gt; 2; // Divide by 4
+                    g = (srcimg[_i(x - 1, y, src_width, src_height)] + // Left
+                         srcimg[_i(x + 1, y, src_width, src_height)] + // Right
+                         srcimg[_i(x, y + 1, src_width, src_height)] + // Up
+                         srcimg[_i(x, y - 1, src_width, src_height)]); // Down
+                    g = g &gt;&gt; 2; // Divide by 4
+                    b = srcimg[_i(x, y, src_width, src_height)]; // We&#39;re at blue pixel
+
+                    dstimg[i++] = rgb_to_rgb565(clamp_i_u8(r), clamp_i_u8(g), clamp_i_u8(b));
+                } else { // Odd column (G)
+                    r = (srcimg[_i(x, y + 1, src_width, src_height)] + // Up
+                         srcimg[_i(x, y - 1, src_width, src_height)]); // Down
+                    r = r &gt;&gt; 1; // Divide by 2
+                    g = srcimg[_i(x, y, src_width, src_height)]; // We&#39;re at green pixel
+                    b = (srcimg[_i(x - 1, y, src_width, src_height)] + // Left
+                         srcimg[_i(x + 1, y, src_width, src_height)]); // Right
+                    b = b &gt;&gt; 1; // Divide by 2
+
+                    dstimg[i++] = rgb_to_rgb565(clamp_i_u8(r), clamp_i_u8(g), clamp_i_u8(b));
+                }
+            } else { // Odd row (G R G R G R)
+                if (!(x &amp; 1)) { // Even column (G)
+                    r = (srcimg[_i(x - 1, y, src_width, src_height)] + // Left
+                         srcimg[_i(x + 1, y, src_width, src_height)]); // Right
+                    r = r &gt;&gt; 1; // Divide by 2
+                    g = srcimg[_i(x, y, src_width, src_height)]; // We&#39;re at green pixel
+                    b = (srcimg[_i(x, y + 1, src_width, src_height)] + // Up
+                         srcimg[_i(x, y - 1, src_width, src_height)]); // Down
+                    b = b &gt;&gt; 1; // Divide by 2
+
+                    dstimg[i++] = rgb_to_rgb565(clamp_i_u8(r), clamp_i_u8(g), clamp_i_u8(b));
+                } else { // Odd column (R)
+                    r = srcimg[_i(x, y, src_width, src_height)]; // We&#39;re at red pixel
+                    g = (srcimg[_i(x - 1, y, src_width, src_height)] + // Left
+                         srcimg[_i(x + 1, y, src_width, src_height)] + // Right
+                         srcimg[_i(x, y + 1, src_width, src_height)] + // Up
+                         srcimg[_i(x, y - 1, src_width, src_height)]); // Down
+                    g = g &gt;&gt; 2; // Divide by 4
+                    b = (srcimg[_i(x - 1, y + 1, src_width, src_height)] + // Top left
+                         srcimg[_i(x + 1, y + 1, src_width, src_height)] + // Top right
+                         srcimg[_i(x - 1, y - 1, src_width, src_height)] + // Bottom left
+                         srcimg[_i(x + 1, y - 1, src_width, src_height)]); // Bottom right
+                    b = b &gt;&gt; 2; // Divide by 4
+
+                    dstimg[i++] = rgb_to_rgb565(clamp_i_u8(r), clamp_i_u8(g), clamp_i_u8(b));
+                }
+            }
+        }
+    }
+}</pre>
+</div></div><h2 id="Bayer:Baseline-CallingFunctionandRotation">Calling Function and Rotation</h2><p>The <code>bayer_bilinear_demosaicing_crop</code> function is called from within the main application body, located in the <code>load_input </code>function.  This block of code plays a critical part in the image pre-processing. First, by utilizing the offset and size features of the Bayer function, the the interpolation can be performed a single column at a time by incrementing the X offset, and specifying the size of 1x168.  This block of 168 pixels (which are a column of the source image), will be fed into the CNN engine as row, therefore performing the 90 Degree rotation.  Secondly, the CNN engine utilizes RGB888 pixel formats, so each pixel is converted from RGB565 prior to loading into the FIFO.</p><div class="code panel pdl" style="border-width: 1px;"><div class="codeHeader panelHeader pdl" style="border-bottom-width: 1px;"><b>load_input</b></div><div class="codeContent panelContent pdl">
+<pre class="syntaxhighlighter-pre" data-syntaxhighlighter-params="brush: cpp; gutter: false; first-line: 74; theme: Confluence" data-theme="Confluence">   color_correct(raw, w, h);
+
+    // The model needs 168x224.
+    // The HM0360 give us 320x240.
+    // We will achieve this by debayering &quot;on the fly&quot; to crop to
+    // 224x168 while feeding the CNN column-wise instead of row-wise.
+    unsigned int crop_x = 224, crop_y = 168;
+    unsigned int start_x = (320 - crop_x) &gt;&gt; 1;
+    unsigned int start_y = (240 - crop_y) &gt;&gt; 1;
+
+    uint8_t ur = 0, ug = 0, ub = 0;
+    int8_t r = 0, g = 0, b = 0;
+    uint32_t rgb888 = 0;
+
+    uint16_t rgb565_buffer[crop_y];
+    uint16_t rgb565;
+
+    for (unsigned int x = start_x; x &lt; start_x + crop_x; x++) {
+        bayer_bilinear_demosaicing_crop(raw, w, h, x, start_y, rgb565_buffer, 1, crop_y);
+        /* ^ The crop is achieved here by offsetting where we start
+        iterating across the source image.  The rotation is achieved
+        by iterating across the image in the vertical (h) direction
+        down a single column.  Then, we feed the column into the CNN...
+        */
+
+        for (unsigned int y = 0; y &lt; crop_y; y++) { // ... here.
+            // Since the CNN expects
+            // Decode RGB565 to RGB888
+            rgb565 = rgb565_buffer[y];
+            ur = (rgb565 &amp; 0xF8);
+            ug = (rgb565 &amp; 0b111) &lt;&lt; 5;
+            ug |= (rgb565 &amp; 0xe000) &gt;&gt; 11;
+            ub = (rgb565 &amp; 0x1f00) &gt;&gt; 5;
+
+            // Normalize from [0, 255] -&gt; [-128, 127]
+            r = ur - 128;
+            g = ug - 128;
+            b = ub - 128;
+
+            // Pack to RGB888 (0x00BBGGRR)
+            rgb888 = r | (g &lt;&lt; 8) | (b &lt;&lt; 16);
+
+            // Loading data into the CNN fifo
+            while (((*((volatile uint32_t *)0x50000004) &amp; 1)) != 0)
+                ; // Wait for FIFO 0
+            *((volatile uint32_t *)0x50000008) = rgb888; // Write FIFO 0
+        }
+    }</pre>
+</div></div><h1 id="Bayer:Baseline-BaselineTiming">Baseline Timing</h1><p>The baseline timing for the Bayer functionality will be captured in three places:</p><ul><li>A single call to <code>bayer_bilinear_demosaicing_crop </code>to get 1 source column</li><li>A single call to <code>bayer_bilinear_demosaicing_crop </code>and loading the CNN with the converted pixel values (One instance of the outer For loop)</li><li>The complete loop of all pixels interpolated and loaded into the CNN</li></ul><p>These multiple data points are used to help quantify not only the modifications made to <code>bayer_bilinear_demosaicing_crop</code>, but also determine the impact of any changes to the color conversion and normalization.</p><p><br/></p><div class="table-wrap"><table class="wrapped confluenceTable"><colgroup><col style="width: 379.0px;"/><col style="width: 29.0px;"/><col/></colgroup><tbody><tr><td class="confluenceTd">Single row <code>bayer_bilinear_demosaicing_crop </code>call</td><td class="confluenceTd"><strong>215us</strong></td><td colspan="1" class="confluenceTd">x224 Rows = 48.160ms</td></tr><tr><td class="confluenceTd">Single row of Interpolation/Load </td><td class="confluenceTd"><strong>318us</strong></td><td colspan="1" class="confluenceTd">x224 Rows = 71.232ms <img class="emoticon emoticon-tick" src="images/icons/emoticons/check.svg" data-emoticon-name="tick" alt="(tick)"/> Confirms it matches the complete loop value below</td></tr><tr><td class="confluenceTd">Complete Interpolation/Load Loop</td><td class="confluenceTd"><strong>71.750ms</strong></td><td colspan="1" class="confluenceTd"><br/></td></tr></tbody></table></div>
+                    </div>
+
+                                        
+                 
+                </div>             </div> 
+            <div id="footer" role="contentinfo">
+                <h2>Next: <a href="796500111.html">Bayer: Iteration 5</a></h2>
+            </div>
+        </div>     </body>
+</html>

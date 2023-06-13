@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>Auto White Balance / Color Correction</title>
+        <link rel="stylesheet" href="styles/site.css" type="text/css" />
+        <META http-equiv="Content-Type" content="text/html; charset=UTF-8">
+    </head>
+
+    <body class="theme-default aui-theme-default">
+        <div id="page">
+            <div id="main" class="aui-page-panel">
+                <div id="main-header">
+                    <div id="breadcrumb-section">
+                        <ol id="breadcrumbs">
+                            <li class="first">
+                                <span><a href="index.html">Optimization by Example</a></span>
+                            </li>
+                                                </ol>
+                    </div>
+                    <h1 id="title-heading" class="pagetitle">
+                                                <span id="title-text">
+                            Auto White Balance / Color Correction
+                        </span>
+                    </h1>
+                </div>
+
+                <div id="content" class="view">
+
+                    <div id="main-content" class="wiki-content group">
+                    <p>The first algorithm component under review is the auto-white balance / color correction algorithm.  White balancing attempts to correct for anomalies, specifically in neutral tones, to allow the image to appear more realistic and natural when displayed.  Sources of non-natural coloring include the image sensor itself, as well as the ambient lighting when the image was taken.  See below for an example of an unbalanced and corrected image.</p><p><span class="confluence-embedded-file-wrapper confluence-embedded-manual-size"><img class="confluence-embedded-image" draggable="false" height="400" src="attachments/789693407/789693418.jpg" data-image-src="attachments/789693407/789693418.jpg" data-unresolved-comment-count="0" data-linked-resource-id="789693418" data-linked-resource-version="1" data-linked-resource-type="attachment" data-linked-resource-default-alias="awb.jpg" data-base-url="https://confluence.analog.com" data-linked-resource-content-type="image/jpeg" data-linked-resource-container-id="789693407" data-linked-resource-container-version="4"></span></p><h1 id="AutoWhiteBalance/ColorCorrection-GrayWorldAlgorithm">Gray World Algorithm</h1><p>The CAM01 demo application utilizes the common, yet simple, Gray World Algorithm for color correction.  The Gray World algorithm makes the assumption that the average intensity of Red, Green and Blue colors in real world are the same, hence &quot;gray&quot;.  Correction in the digital space involves normalizing the colors channels to bring their averages together.  There are a few approaches to choosing the value as the baseline mean.  For this implementation, the green channel remains fixed, as it is the most sensitive color to the human eye.</p><h2 id="AutoWhiteBalance/ColorCorrection-Step1:CalculatetheMeans">Step 1: Calculate the Means</h2><p>The first step in Gray World is to calculate the mean of each color channel through the entire image.  For this implementation the mean is calculated against the raw Bayer pattern data, which makes extracting the independent color channels simple.</p><table border=0 cellspacing=0 cellpadding=0 width=100% align="center" class="latexmath-mathblock" style="width: 100% !important;">
+  <tbody><tr>
+	<td nowrap class="latexmath-numbering"></td>
+	<td nowrap class="latexmath-left"><img class="latexmath" src="download/temp/latex8948924246925842170.png" style="width:152px; height:89px; vertical-align: 0" data-warnings=""/></td>
+  </tr></tbody>
+</table><h2 id="AutoWhiteBalance/ColorCorrection-Step2:CalculatetheScales">Step 2: Calculate the Scales</h2><p>The Red and Blue scale factors are calculated to be the scaling against the fixed average value of Green. </p><table border=0 cellspacing=0 cellpadding=0 width=100% align="center" class="latexmath-mathblock" style="width: 100% !important;">
+  <tbody><tr>
+	<td nowrap class="latexmath-numbering"></td>
+	<td nowrap class="latexmath-left"><img class="latexmath" src="download/temp/latex5395753090033437020.png" style="width:116px; height:56px; vertical-align: 0" data-warnings=""/></td>
+  </tr></tbody>
+</table><h2 class="auto-cursor-target" id="AutoWhiteBalance/ColorCorrection-Step3:ApplytheScaling">Step 3: Apply the Scaling</h2><p>For each pixel, Green remains fixed.  Red and Blue are multiplied by their scale factor, and saturated at a maximum of 255 (8-bits).</p><table border=0 cellspacing=0 cellpadding=0 width=100% align="center" class="latexmath-mathblock" style="width: 100% !important;">
+  <tbody><tr>
+	<td nowrap class="latexmath-numbering"></td>
+	<td nowrap class="latexmath-left"><img class="latexmath" src="download/temp/latex4585674375041756707.png" style="width:213px; height:91px; vertical-align: 0" data-warnings=""/></td>
+  </tr></tbody>
+</table>
+                    </div>
+
+                                                            
+                    
+                 
+                </div>             </div> 
+            <div id="footer" role="contentinfo">
+                <h2>Next: <a href="789693435.html">AWB: Baseline</a></h2>
+            </div>
+        </div>     </body>
+</html>

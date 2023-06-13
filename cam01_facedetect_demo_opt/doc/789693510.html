@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>AWB: Iteration 1</title>
+        <link rel="stylesheet" href="styles/site.css" type="text/css" />
+        <META http-equiv="Content-Type" content="text/html; charset=UTF-8">
+    </head>
+
+    <body class="theme-default aui-theme-default">
+        <div id="page">
+            <div id="main" class="aui-page-panel">
+                <div id="main-header">
+                    <div id="breadcrumb-section">
+                        <ol id="breadcrumbs">
+                            <li class="first">
+                                <span><a href="index.html">Optimization by Example</a></span>
+                            </li>
+                                                    <li>
+                                <span><a href="789693407.html">Auto White Balance / Color Correction</a></span>
+                            </li>
+                                                </ol>
+                    </div>
+                    <h1 id="title-heading" class="pagetitle">
+                                                <span id="title-text">
+                            AWB: Iteration 1
+                        </span>
+                    </h1>
+                </div>
+
+                <div id="content" class="view">
+
+                    <div id="main-content" class="wiki-content group">
+                    <p>In this first optimization iteration for the Auto White Balance algorithm, the goal will be to minimize the number of loop iterations as well as reducing or eliminating unnecessary calculations and conditional checks.  To accomplish this, assumptions about the application and/or algorithm need to made.  </p><p>Assumptions are one of the foundational elements when it comes to optimization.  Through assumptions, bounds are applied to the problem which may be to an individual component of the system, or to the actual algorithm or application itself. When incorporating assumptions and bounds into software, the software typically begins to drift from a universal, one-size fits all code base, to something more specific.  The extent of that drift is highly dependent on the assumptions made.</p><p>For this iteration we will be assuming the Bayer image data will always have an even number of both rows and columns.  This itself is a relatively benign assumption, in that most (if not all) camera sensors produce images with even counts of rows and columns.  The exception to this assumption would be the <em>user</em> wanting to perform color correction on a cropped dataset with odd row or column counts.  To mitigate this, the code should be augmented with assert statements, or condition checks with error codes to prevent incorrect operation.</p><h1 id="AWB:Iteration1-CountRemoval">Count Removal</h1><p>Using the assumption of even row and columns, the first modification in this iteration is to remove the pixel counters (<code>g_count</code>, <code>b_count</code>, and <code>r_count</code>) respectively from <code>calc_correction_simple</code>.  Due to the assumption, it is known that the total numbers of pixels is WxH (320x240 in this example), and due to the format of the Bayer pattern, half of them are Green, with 1/4 going to Blue and Red each.  While a simple counter increment itself is not computationally intense, performing it for every iteration (76,800 times in this example), as well as the possible overhead association with moving data to and from the stack can contribute significantly to run time.</p><p>In the following code, the baseline counts are commented it for readability. They will be removed in future code presentation.  With this small change, the execution time was reduced to <strong>25.920ms</strong>, or 1.168ms (4.3%) from the baseline.</p><div class="code panel pdl" style="border-width: 1px;"><div class="codeContent panelContent pdl">
+<pre class="syntaxhighlighter-pre" data-syntaxhighlighter-params="brush: cpp; gutter: false; theme: Confluence" data-theme="Confluence">void calc_correction_simple(uint8_t *bayer_pattern, unsigned int w, unsigned int h,
+                            float *out_coeff_r, float *out_coeff_b)
+{
+    unsigned int r_avg = 0, g_avg = 0, b_avg = 0;
+    unsigned int count = 0;
+    //unsigned int r_count = 0, g_count = 0, b_count = 0;
+
+    //This assume even rows and columns
+    assert((w &amp; 0x1) == 0);
+    assert((h &amp; 0x1) == 0);
+
+    for (int y = 0; y &lt; h; y++) {
+        for (int x = 0; x &lt; w; x++) {
+            if (!(y &amp; 1)) { // Even row (B G B G B G)
+                if (!(x &amp; 1)) { // B
+                    b_avg += bayer_pattern[_i(x, y, w, h)];
+                    //b_count++;
+                } else { // G
+                    g_avg += bayer_pattern[_i(x, y, w, h)];
+                    //g_count++;
+                }
+            } else { // Odd row (G R G R G R)
+                if (!(x &amp; 1)) { // G
+                    g_avg += bayer_pattern[_i(x, y, w, h)];
+                    //g_count++;
+                } else { // R
+                    r_avg += bayer_pattern[_i(x, y, w, h)];
+                    //r_count++;
+                }
+            }
+        }
+    }
+
+    //Get half count for green
+    count = (w * h) &gt;&gt; 1;
+    g_avg = g_avg / count;
+
+    //Halve again for blue and red
+    count = count &gt;&gt; 1;
+    r_avg = r_avg / count;
+    b_avg = b_avg / count;
+
+    *out_coeff_r = ((float)g_avg) / r_avg;
+    *out_coeff_b = ((float)g_avg) / b_avg;
+}</pre>
+</div></div><h1 id="AWB:Iteration1-SplitRowLooping">Split Row Looping</h1><p>The next optimization operation is to remove the need to check if a row is odd or even on <u>every</u> pixel.  By taking advantage of the knowledge the image buffer is a uniform square, of columns by rows, the entire length of a row can be operated on without needing to confirm it is odd or even.  To accomplish this, the contents of the outer loop will be actually be split into 2 consecutive inner loops, the first operating on even values, the second on odd. By doing so, the <code>if (!(y &amp; 1))</code> check is removed from every pixel operation.</p><p>With this small change, the execution time was reduced to <strong>24.003ms</strong>, or 1.917ms (7.4%) from the the previous modification.</p><div class="code panel pdl" style="border-width: 1px;"><div class="codeContent panelContent pdl">
+<pre class="syntaxhighlighter-pre" data-syntaxhighlighter-params="brush: cpp; gutter: false; theme: Confluence" data-theme="Confluence">void calc_correction_simple(uint8_t *bayer_pattern, unsigned int w, unsigned int h,
+                            float *out_coeff_r, float *out_coeff_b)
+{
+    unsigned int r_avg = 0, g_avg = 0, b_avg = 0;
+    unsigned int count = 0;
+
+    //This assume even rows and columns
+    assert((w &amp; 0x1) == 0);
+    assert((h &amp; 0x1) == 0);
+
+    int y = 0;
+    while(y &lt; h) 
+    {
+        //Even Row Loop
+        for (int x = 0; x &lt; w; x++) 
+        {
+            // Even row (B G B G B G)
+            if (!(x &amp; 1)) { // B
+                b_avg += bayer_pattern[_i(x, y, w, h)];
+            } else { // G
+                g_avg += bayer_pattern[_i(x, y, w, h)];
+            }
+        }
+        y++; //Next row
+
+        for (int x = 0; x &lt; w; x++) 
+        {        
+            // Odd row (G R G R G R)
+            if (!(x &amp; 1)) { // G
+                g_avg += bayer_pattern[_i(x, y, w, h)];
+            } else { // R
+                r_avg += bayer_pattern[_i(x, y, w, h)];
+            }
+        }
+        y++; //Next Row
+    }
+
+    //Get half count for green
+    count = (w * h) &gt;&gt; 1;
+    g_avg = g_avg / count;
+
+    //Halve again for blue and red
+    count = count &gt;&gt; 1;
+    r_avg = r_avg / count;
+    b_avg = b_avg / count;
+
+    *out_coeff_r = ((float)g_avg) / r_avg;
+    *out_coeff_b = ((float)g_avg) / b_avg;
+}</pre>
+</div></div><h1 class="auto-cursor-target" id="AWB:Iteration1-ConsecutiveColumnOperation">Consecutive Column Operation</h1><p>Similar to the idea of removing the odd/even row check, the check for column type can also be easily removed.  By leveraging the assumption that the column count is even, meaning for every even pixel operated on, there will always be an odd pixel following it, the conditional <code><span style="color: rgb(175,0,219);">if</span><span style="color: rgb(0,0,0);"> (!(</span><span style="color: rgb(0,16,128);">x</span><span style="color: rgb(0,0,0);"> &amp; </span><span style="color: rgb(9,134,88);">1</span></code><span style="color: rgb(0,0,0);"><code>)) </code>statement can be removed, and instead consecutive operations (the first being even, the second being odd), put it its place.</span></p><p><span style="color: rgb(0,0,0);">With this series of modifications, the execution time was reduced to <strong>20.931ms</strong>, or 3.072ms (12.8%) from the the previous modification.  This decrease in execution time is more significant than the priors, even though the extent of the changes was comparable. The likely reasoning is by eliminating comparison and other operators, the compiler was able to complete the entirety of the loops using only registers and no longer needed stack space. Alternately, due to the incrementing x variable, the compiler may have been able to optimize the<code> _i </code>calls for efficiency.  Diving into the compiled assembly code is outside the scope of exercise, but is a great topic for another series.</span></p><div class="code panel pdl" style="border-width: 1px;"><div class="codeContent panelContent pdl">
+<pre class="syntaxhighlighter-pre" data-syntaxhighlighter-params="brush: cpp; gutter: false; theme: Confluence" data-theme="Confluence">void calc_correction_simple(uint8_t *bayer_pattern, unsigned int w, unsigned int h,
+                            float *out_coeff_r, float *out_coeff_b)
+{
+    unsigned int r_avg = 0, g_avg = 0, b_avg = 0;
+    unsigned int count = 0;
+
+    //This assume even rows and columns
+    assert((w &amp; 0x1) == 0);
+    assert((h &amp; 0x1) == 0);
+
+    int y = 0;
+    int x = 0;
+    while(y &lt; h) 
+    {
+        //Even Row Loop
+        x = 0;
+        while(x &lt; w)
+        {
+            // Even row (B G B G B G)            
+            b_avg += bayer_pattern[_i(x++, y, w, h)]; // B             
+            g_avg += bayer_pattern[_i(x++, y, w, h)]; // G
+        }
+        y++; //Next row
+
+        x = 0;
+        while(x &lt; w)
+        {
+            // Odd row (G R G R G R)
+            g_avg += bayer_pattern[_i(x++, y, w, h)]; // G
+            r_avg += bayer_pattern[_i(x++, y, w, h)]; // R
+        }
+        y++; //Next Row
+    }
+
+    //Get half count for green
+    count = (w * h) &gt;&gt; 1;
+    g_avg = g_avg / count;
+
+    //Halve again for blue and red
+    count = count &gt;&gt; 1;
+    r_avg = r_avg / count;
+    b_avg = b_avg / count;
+
+    *out_coeff_r = ((float)g_avg) / r_avg;
+    *out_coeff_b = ((float)g_avg) / b_avg;
+}</pre>
+</div></div><h1 class="auto-cursor-target" id="AWB:Iteration1-DuplicatingImprovements">Duplicating Improvements</h1><p>Finally, the last modification for this iteration will be mimicking the improvements to the <code>calc_correction_simple </code>loops into the loop within <code>color_correct</code>.  The implementation differs slightly that <code>calc_correction_simple </code>in 2 ways:</p><ul><li>Because the image data is re-written back to memory, the x value can not be modified inline, therefore a for loop is still used</li><li>The Green values do not need to be scaled, so the X values can skip every other pixel. </li></ul><p>By including these changes in to color_correct, the new run time is reduced to <strong>14.965ms</strong>, another 5.96ms (28%!) from the previous run.</p><div class="code panel pdl" style="border-width: 1px;"><div class="codeContent panelContent pdl">
+<pre class="syntaxhighlighter-pre" data-syntaxhighlighter-params="brush: cpp; gutter: false; theme: Confluence" data-theme="Confluence">void color_correct(uint8_t *srcimg, unsigned int w, unsigned int h)
+{
+    float coeff_r = 0, coeff_b = 0;
+
+    //This assume even rows and columns
+    assert((w &amp; 0x1) == 0);
+    assert((h &amp; 0x1) == 0);
+    
+    calc_correction_simple(srcimg, w, h, &amp;coeff_r, &amp;coeff_b);
+
+    // Apply color correction before debayering, helps slightly to reduce artifacts
+    int y = 0;    
+    while( y &lt; h )
+    {
+        //Start at 0, Blue is on even pixels
+        for (int x = 0; x &lt; w; x+=2) 
+        {
+            srcimg[_i(x, y, w, h)] = clamp_f_u8(coeff_b * srcimg[_i(x, y, w, h)]);
+        }
+        y++; //Next row
+
+        //Start at 1, Red is on odd pixels
+        for (int x = 1; x &lt; w; x+=2) 
+        {
+            srcimg[_i(x, y, w, h)] = clamp_f_u8(coeff_r * srcimg[_i(x, y, w, h)]);
+        }
+        y++; //Next row        
+    }
+}</pre>
+</div></div><h1 class="auto-cursor-target" id="AWB:Iteration1-Summary">Summary</h1><p>In summary, this iteration focused on limiting the number of loop cycles and conditional checks within each loop.  The assumptions made are nearly universal, allowing this code to be platform and application independent. The color correction algorithm now runs in <strong>14.965ms</strong>, a 12.123 ms reduction from the baseline, or <strong>44.8%.</strong></p>
+                    </div>
+
+                                        
+                 
+                </div>             </div> 
+            <div id="footer" role="contentinfo">
+                <h2>Next: <a href="789693561.html">AWB: Iteration 2</a></h2>
+            </div>
+        </div>     </body>
+</html>

@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>AWB: Iteration 2</title>
+        <link rel="stylesheet" href="styles/site.css" type="text/css" />
+        <META http-equiv="Content-Type" content="text/html; charset=UTF-8">
+    </head>
+
+    <body class="theme-default aui-theme-default">
+        <div id="page">
+            <div id="main" class="aui-page-panel">
+                <div id="main-header">
+                    <div id="breadcrumb-section">
+                        <ol id="breadcrumbs">
+                            <li class="first">
+                                <span><a href="index.html">Optimization by Example</a></span>
+                            </li>
+                                                    <li>
+                                <span><a href="789693407.html">Auto White Balance / Color Correction</a></span>
+                            </li>
+                                                </ol>
+                    </div>
+                    <h1 id="title-heading" class="pagetitle">
+                                                <span id="title-text">
+                            AWB: Iteration 2
+                        </span>
+                    </h1>
+                </div>
+
+                <div id="content" class="view">
+
+                    <div id="main-content" class="wiki-content group">
+                    <p>This iteration of the AWB optimization utilizes the codebase from the completion of <a href="789693510.html">Iteration 1</a>.  Unlike the first iteration which focused on reducing loop iterations and conditional checks, this iteration will look at the use for floating point arithmetic for performing the scale.  </p><p>Floating point, specifically <a class="external-link" href="https://en.wikipedia.org/wiki/IEEE_754" rel="nofollow">IEEE 754</a> provides a versatile numbering format supporting a wide range of numbers from the smallest fractions through large integers.  With its versatility comes several drawbacks:</p><ul><li>There is overhead associated with converting from integers to floats, and back</li><li>For processors with a floating-point co-processor, there are some floating point instructions which have longer cycle counts than their integer equivalents</li><li>For processors without floating-point co-processors, there is a significant performance hit doing floating point math in software</li><li>Depending on the range of numbers used, there could be a loss of precision with floating point math</li></ul><p>In the case of our example, the processor (ARM M4F) has hardware floating point capabilities, and the range of pixel values is small enough to negate any potential loss of precision.  The focus on eliminating the floating point math is to reduce the associated overhead to improve the execution time, with the added benefit of supporting processors without floating point hardware.</p><p>To perform the scaling of Red and Green,<a class="external-link" href="https://en.wikipedia.org/wiki/Fixed-point_arithmetic" rel="nofollow"> fixed point integer math </a> will be used.  In the case of working with pixel values, the fixed point arithmetic is extremely simple to understand.</p><p>Recalling that the scaling coefficient is calculated by green_avg / red_avg (or blue), a fixed point equivalent can simply be derived by first multiplying green_avg by 256 (LSL 8) then performing the divide.  This creates a 16-bit fixed point value with 8 bits of fractional precision. When performing the actual scaling, the 8-bit raw pixel value is multiplied by the 16-bit scale.  The lower 8-bits may be discarded as remainder (Shift right by 8), and the result after shifting is the desired product.</p><p><br/></p><h1 id="AWB:Iteration2-CalculatingtheScale">Calculating the Scale</h1><p>Returning to <code>calc_correction_simple</code>, the scale calculation math is modified to utilize 16-bit integer math. To support this, the input arguments are also modified to utilize <code>uint16_t </code>versus floating point.  Since the scale calculation is only 3 division operations, measuring run time will not yet be performed as the impact is expected to be negligible.</p><div class="code panel pdl" style="border-width: 1px;"><div class="codeContent panelContent pdl">
+<pre class="syntaxhighlighter-pre" data-syntaxhighlighter-params="brush: cpp; gutter: false; theme: Confluence" data-theme="Confluence">void calc_correction_simple(uint8_t *bayer_pattern, unsigned int w, unsigned int h,
+                            uint16_t *out_coeff_r, uint16_t *out_coeff_b)
+{
+    unsigned int r_avg = 0, g_avg = 0, b_avg = 0;
+    unsigned int count = 0;
+
+    //This assume even rows and columns
+    assert((w &amp; 0x1) == 0);
+    assert((h &amp; 0x1) == 0);
+
+    int y = 0;
+    int x = 0;
+    while(y &lt; h) 
+    {
+        //Even Row Loop
+        x = 0;
+        while(x &lt; w)
+        {
+            // Even row (B G B G B G)            
+            b_avg += bayer_pattern[_i(x++, y, w, h)]; // B             
+            g_avg += bayer_pattern[_i(x++, y, w, h)]; // G
+        }
+        y++; //Next row
+
+        x = 0;
+        while(x &lt; w)
+        {
+            // Odd row (G R G R G R)
+            g_avg += bayer_pattern[_i(x++, y, w, h)]; // G
+            r_avg += bayer_pattern[_i(x++, y, w, h)]; // R
+        }
+        y++; //Next Row
+    }
+
+    //Get half count for green
+    count = (w * h) &gt;&gt; 1;
+    g_avg = g_avg / count;
+
+    //Halve again for blue and red
+    count = count &gt;&gt; 1;
+    r_avg = r_avg / count;
+    b_avg = b_avg / count;
+
+    *out_coeff_r = (uint16_t)(g_avg &lt;&lt; 8) / r_avg;
+    *out_coeff_b = (uint16_t)(g_avg &lt;&lt; 8) / b_avg;
+}</pre>
+</div></div><h1 id="AWB:Iteration2-ModifyingtheScaling">Modifying the Scaling</h1><p>Now that the scale factor is modified to utilize fixed point, the actual scaling of values must also be changed.  Much like the floating point calculation, the math is simply multiplying the scale with the raw value.  Since the resulting product is of the unsigned integer type, there is a computational advantage in performing the bounds check. While the previous <code>clamp_f_u8 </code>function call checked for negative values, and values exceeding 8-bits, the unsigned integer type eliminates the need for a 0 check, and allows bitwise operations to check for overflows.  The resulting clamp is now the simple ternary operator:<code> (scaledVal &amp; 0xFFFF0000) ? 255 : (uint8_t)(scaledVal &gt;&gt; 8);</code></p><p><br/></p><div class="code panel pdl" style="border-width: 1px;"><div class="codeContent panelContent pdl">
+<pre class="syntaxhighlighter-pre" data-syntaxhighlighter-params="brush: cpp; gutter: false; theme: Confluence" data-theme="Confluence">void color_correct(uint8_t *srcimg, unsigned int w, unsigned int h)
+{
+    uint16_t coeff_r = 0, coeff_b = 0;
+    uint32_t scaledVal;
+
+    //This assume even rows and columns
+    assert((w &amp; 0x1) == 0);
+    assert((h &amp; 0x1) == 0);
+    
+    calc_correction_simple(srcimg, w, h, &amp;coeff_r, &amp;coeff_b);
+
+    // Apply color correction before debayering, helps slightly to reduce artifacts
+    int y = 0;    
+    while( y &lt; h )
+    {
+        //Start at 0, Blue is on even pixels
+        for (int x = 0; x &lt; w; x+=2) 
+        {
+            scaledVal = coeff_b * srcimg[_i(x, y, w, h)];
+            srcimg[_i(x, y, w, h)] = (scaledVal &amp; 0xFFFF0000) ? 255 : 
+                                            (uint8_t)(scaledVal &gt;&gt; 8);
+        }
+        y++; //Next row
+
+        //Start at 1, Red is on odd pixels
+        for (int x = 1; x &lt; w; x+=2) 
+        {
+            scaledVal = coeff_r * srcimg[_i(x, y, w, h)];
+            srcimg[_i(x, y, w, h)] = (scaledVal &amp; 0xFFFF0000) ? 255 : 
+                                            (uint8_t)(scaledVal &gt;&gt; 8);
+        }
+        y++; //Next row        
+    }
+}</pre>
+</div></div><p><br/></p><h1 id="AWB:Iteration2-Summary">Summary</h1><p>Running the new fixed point based code brought the run time for color correction down to <strong>10.231 ms</strong>, a 4.734 ms (31.6%) reduction from the previous iteration, and 16.857ms (62%) overall from the baseline.</p>
+                    </div>
+
+                                        
+                 
+                </div>             </div> 
+            <div id="footer" role="contentinfo">
+                <h2>Next: <a href="789693626.html">AWB: Iteration 3</a></h2>
+            </div>
+        </div>     </body>
+</html>

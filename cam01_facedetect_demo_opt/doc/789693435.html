@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>AWB: Baseline</title>
+        <link rel="stylesheet" href="styles/site.css" type="text/css" />
+        <META http-equiv="Content-Type" content="text/html; charset=UTF-8">
+    </head>
+
+    <body class="theme-default aui-theme-default">
+        <div id="page">
+            <div id="main" class="aui-page-panel">
+                <div id="main-header">
+                    <div id="breadcrumb-section">
+                        <ol id="breadcrumbs">
+                            <li class="first">
+                                <span><a href="index.html">Optimization by Example</a></span>
+                            </li>
+                                                    <li>
+                                <span><a href="789693407.html">Auto White Balance / Color Correction</a></span>
+                            </li>
+                                                </ol>
+                    </div>
+                    <h1 id="title-heading" class="pagetitle">
+                                                <span id="title-text">
+                            AWB: Baseline
+                        </span>
+                    </h1>
+                </div>
+
+                <div id="content" class="view">
+
+                    <div id="main-content" class="wiki-content group">
+                    <h1 id="AWB:Baseline-ImplementationDetails">Implementation Details</h1><p>Before looking at areas for optimization, the baseline Gray World algorithm code will be reviewed, as well as a timing baseline established.  The code consists of 2 functions, <code>color_correct </code>and <code>calc_correction_simple</code>. </p><h2 id="AWB:Baseline-color_correct">color_correct</h2><p>The <code>color_correct </code>function first calls <code>calc_correction_simple </code>to calculate the scale factors, named <code>coeff_b </code>and <code>coeff_r </code>respectively.  Once the coefficients are gathered, the image data is modified in place, scaling the blue and red pixel values and returning them to the source buffer. Remembering that the source data is Bayer patterned, the Blue data is only accessed when both the column and rows are even <code>(!(y &amp; 1) &amp;&amp; </code><code>!(x &amp; 1))</code> and the Red data is only accessed when both the column and rows are odd <code>(!(y &amp; 1) &amp;&amp; !(x &amp; 1)).</code></p><div class="code panel pdl" style="border-width: 1px;"><div class="codeHeader panelHeader pdl" style="border-bottom-width: 1px;"><b>color_correct</b></div><div class="codeContent panelContent pdl">
+<pre class="syntaxhighlighter-pre" data-syntaxhighlighter-params="brush: cpp; gutter: false; theme: Confluence" data-theme="Confluence">void color_correct(uint8_t *srcimg, unsigned int w, unsigned int h)
+{
+    float coeff_r = 0, coeff_b = 0;
+    calc_correction_simple(srcimg, w, h, &amp;coeff_r, &amp;coeff_b);
+
+    // Apply color correction before debayering, helps slightly to reduce artifacts
+    for (int y = 0; y &lt; h; y++) {
+        for (int x = 0; x &lt; w; x++) {
+            if (!(y &amp; 1) &amp;&amp; !(x &amp; 1)) {
+                srcimg[_i(x, y, w, h)] = clamp_f_u8(coeff_b * srcimg[_i(x, y, w, h)]);
+            } else if ((y &amp; 1) &amp;&amp; (x &amp; 1)) {
+                srcimg[_i(x, y, w, h)] = clamp_f_u8(coeff_r * srcimg[_i(x, y, w, h)]);
+            }
+        }
+    }
+}</pre>
+</div></div><h2 id="AWB:Baseline-calc_correction_simple">calc_correction_simple</h2><p>The <code>calc_correction_simple </code>function calculates the means of each channel, and performs the scale factor calculation, as floating point values. Similar to the <code>color_correct </code>code above, the determination of which color channel is active is based on the odd or even-ness of the row and column.</p><div class="code panel pdl" style="border-width: 1px;"><div class="codeHeader panelHeader pdl" style="border-bottom-width: 1px;"><b>calc_correction_simple</b></div><div class="codeContent panelContent pdl">
+<pre class="syntaxhighlighter-pre" data-syntaxhighlighter-params="brush: cpp; gutter: false; theme: Confluence" data-theme="Confluence">void calc_correction_simple(uint8_t *bayer_pattern, unsigned int w, unsigned int h,
+                            float *out_coeff_r, float *out_coeff_b)
+{
+    unsigned int r_avg = 0, g_avg = 0, b_avg = 0;
+    unsigned int r_count = 0, g_count = 0, b_count = 0;
+
+    for (int y = 0; y &lt; h; y++) {
+        for (int x = 0; x &lt; w; x++) {
+            if (!(y &amp; 1)) { // Even row (B G B G B G)
+                if (!(x &amp; 1)) { // B
+                    b_avg += bayer_pattern[_i(x, y, w, h)];
+                    b_count++;
+                } else { // G
+                    g_avg += bayer_pattern[_i(x, y, w, h)];
+                    g_count++;
+                }
+            } else { // Odd row (G R G R G R)
+                if (!(x &amp; 1)) { // G
+                    g_avg += bayer_pattern[_i(x, y, w, h)];
+                    g_count++;
+                } else { // R
+                    r_avg += bayer_pattern[_i(x, y, w, h)];
+                    r_count++;
+                }
+            }
+        }
+    }
+
+    r_avg = r_avg / r_count;
+    g_avg = g_avg / g_count;
+    b_avg = b_avg / b_count;
+
+    *out_coeff_r = ((float)g_avg) / r_avg;
+    *out_coeff_b = ((float)g_avg) / b_avg;
+}</pre>
+</div></div><h2 class="auto-cursor-target" id="AWB:Baseline-HelperFunctions">Helper Functions</h2><p>There are a couple helper functions used extensively in the code, the <code>_i</code> function which calculated a buffer index based on x and y position, relative to the width and height of the overall buffer.  This is critical in determining the correct offset within a 1-dimensional C array, for accessing 2-dimensional data.</p><div class="code panel pdl" style="border-width: 1px;"><div class="codeHeader panelHeader pdl" style="border-bottom-width: 1px;"><b>_i</b></div><div class="codeContent panelContent pdl">
+<pre class="syntaxhighlighter-pre" data-syntaxhighlighter-params="brush: cpp; gutter: false; theme: Confluence" data-theme="Confluence">unsigned int _i(unsigned int x, unsigned int y, unsigned int xres, unsigned int yres)
+{
+    if (x &lt; 0)
+        x = 0;
+    else if (x &gt; xres)
+        x = xres - 1;
+    if (y &lt; 0)
+        y = 0;
+    else if (y &gt; yres)
+        y = yres - 1;
+    return y * xres + x;
+}</pre>
+</div></div><p class="auto-cursor-target">The other critical helper function is <code>clamp_f_u8</code>. This ensures the scaled color value does not exceed the limits of a 8-bit pixel (255)  prior to writing back to memory.</p><div class="code panel pdl" style="border-width: 1px;"><div class="codeHeader panelHeader pdl" style="border-bottom-width: 1px;"><b>clamp_f_u8</b></div><div class="codeContent panelContent pdl">
+<pre class="syntaxhighlighter-pre" data-syntaxhighlighter-params="brush: cpp; gutter: false; theme: Confluence" data-theme="Confluence">uint8_t clamp_f_u8(float val)
+{
+    if (val &gt; 255)
+        return 255;
+    if (val &lt; 0)
+        return 0;
+    return (uint8_t)val;
+}</pre>
+</div></div><h1 class="auto-cursor-target" id="AWB:Baseline-BaselineTiming">Baseline Timing</h1><p>Isolating only the call to <code>color_correct</code>, which performs the coefficient calculation, correction and writing back to memory for the full image, the execution time for the baseline AWB is <strong>27.088 ms.</strong></p><div class="code panel pdl" style="border-width: 1px;"><div class="codeContent panelContent pdl">
+<pre class="syntaxhighlighter-pre" data-syntaxhighlighter-params="brush: cpp; gutter: false; theme: Confluence" data-theme="Confluence">MXC_TMR_SW_Start(MXC_TMR1);    
+color_correct(raw, w, h);
+execTime = MXC_TMR_SW_Stop(MXC_TMR1);</pre>
+</div></div>
+                    </div>
+
+                                        
+                 
+                </div>             </div> 
+            <div id="footer" role="contentinfo">
+                <h2>Next: <a href="789693510.html">AWB: Iteration 1</a></h2>
+            </div>
+        </div>     </body>
+</html>

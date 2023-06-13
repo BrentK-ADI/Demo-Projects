@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>Bayer: Iteration 5</title>
+        <link rel="stylesheet" href="styles/site.css" type="text/css" />
+        <META http-equiv="Content-Type" content="text/html; charset=UTF-8">
+    </head>
+
+    <body class="theme-default aui-theme-default">
+        <div id="page">
+            <div id="main" class="aui-page-panel">
+                <div id="main-header">
+                    <div id="breadcrumb-section">
+                        <ol id="breadcrumbs">
+                            <li class="first">
+                                <span><a href="index.html">Optimization by Example</a></span>
+                            </li>
+                                                    <li>
+                                <span><a href="Bayer-Interpolation_796177303.html">Bayer Interpolation</a></span>
+                            </li>
+                                                </ol>
+                    </div>
+                    <h1 id="title-heading" class="pagetitle">
+                                                <span id="title-text">
+                            Bayer: Iteration 5
+                        </span>
+                    </h1>
+                </div>
+
+                <div id="content" class="view">
+
+                    <div id="main-content" class="wiki-content group">
+                    <p>Picking up at the final iteration of the AWB algorithm, we'll begin to look at modifications to the Bayer interpolation algorithm in order to improve execution time.  Much like the AWB iterations, the approach will be to minimize loop iterations, instructions and memory accesses, and ultimately utilizing parallel instructions where possible.</p><p>This first iteration focuses on streamlining and using common pixel data types when converting from Bayer pattern to CNN memory.  Recalling the algorithm overview, the <code>bayer_bilinear_demosaicing_crop</code> function produces pixels in the 16-bit RGB565 data format.  This is the desired format for embedded TFT displays, and the use of that format in this application is a legacy implementation from a display based system.  The CNN itself, requires data in 24-bit RGB888 format, where each channel is given 8-bits of data.  To get there, a conversion from RGB565 to RGB888 is performed prior to loading the CNN memory.</p><p>Functionally this method works, however there are both efficiency and data integrity flaws.  The result of the Bayer conversion, <u>prior</u> to creating RGB565 data, is natively in RGB888 format.  As this implies, a conversion is being performed away from the needed data type, only to convert it back again.  This introduces several unnecessary operations.   </p><p>For data integrity, when the data is converted to RGB565, color resolution is lost, as the color channels are shrunk to 5- or 6-bits depending on the channel.  As the data is stretched back to 8-bits for the CNN, the full <em>range</em> is preserved, however the <em>resolution</em> of the color information is diminished as only 5- or 6-bits still hold usable information.  This has a negligible effect on the human perception of an image (on a screen for instance), however could have an impact on the CNNs inferences.</p><div class="confluence-information-macro confluence-information-macro-information"><span class="aui-icon aui-icon-small aui-iconfont-info confluence-information-macro-icon"></span><div class="confluence-information-macro-body"><p>Note: If a display is added to the system in addition to the CNN, the recommended approach is to still utilize RGB888 from the Bayer to preserve data integrity. A conversion to RGB565 is then performed to satisfy the display requirements.  This maximizes the resolution of the color channels for the CNN, and is implemented with a single color conversion, versus 2 in the baseline design.</p></div></div><h1 id="Bayer:Iteration5-ImplementationDetails">Implementation Details</h1><h2 id="Bayer:Iteration5-RGB888DataType">RGB888 Data Type</h2><p>To support the use of RGB888 data between the main application and Bayer function, a new data type will be introduced.  This data type will be a union combining individual access of the 8-bit values for each of the color channels, as well as combined access of the entire pixel via a single 32-bit value. </p><div class="code panel pdl" style="border-width: 1px;"><div class="codeContent panelContent pdl">
+<pre class="syntaxhighlighter-pre" data-syntaxhighlighter-params="brush: cpp; gutter: false; theme: Confluence" data-theme="Confluence">typedef union
+{
+    struct 
+    {
+        uint8_t r;
+        uint8_t g;
+        uint8_t b;
+        uint8_t unused;
+    } __attribute__((packed)) color_data;
+
+    uint32_t pixel_data;
+} rgb888_pixel_t;</pre>
+</div></div><h2 id="Bayer:Iteration5-BayerModifications">Bayer Modifications</h2><p>The modifications within the Bayer code itself to support the use of the native RGB888 format are quite simple.   The function definition is modified to accept a destination buffer of type rgb888_pixel_t rather than the uint16_t prior.  Following the creation of the RGB components in each of the 4 possible Bayer configurations, rather than calling the rgb_to_rgb565 conversion function, the values are immediately assigned to the next RGB888 destination pixel using the same clamp as doing the conversion.  The modified code shown below. For readability, only the first Bayer configuration is shown, however the changes are mirrored in the other 3.</p><div class="code panel pdl" style="border-width: 1px;"><div class="codeContent panelContent pdl">
+<pre class="syntaxhighlighter-pre" data-syntaxhighlighter-params="brush: cpp; gutter: false; theme: Confluence" data-theme="Confluence">void bayer_bilinear_demosaicing_crop(uint8_t *srcimg, uint32_t src_width, uint32_t src_height,
+                                     uint32_t w_offset, uint32_t h_offset, rgb888_pixel_t *dstimg,
+                                     uint32_t dst_width, uint32_t dst_height)
+{
+    unsigned int r, g, b = 0;
+    int i = 0;
+
+    for (int y = h_offset; y &lt; h_offset + dst_height; y++) {
+        for (int x = w_offset; x &lt; w_offset + dst_width; x++) {
+            if (!(y &amp; 1)) { // Even row (B G B G B G)
+                if (!(x &amp; 1)) { // Even column (B)
+                    r = (srcimg[_i(x - 1, y + 1, src_width, src_height)] + // Top left
+                         srcimg[_i(x + 1, y + 1, src_width, src_height)] + // Top right
+                         srcimg[_i(x - 1, y - 1, src_width, src_height)] + // Bottom left
+                         srcimg[_i(x + 1, y - 1, src_width, src_height)]); // Bottom right
+                    r = r &gt;&gt; 2; // Divide by 4
+                    g = (srcimg[_i(x - 1, y, src_width, src_height)] + // Left
+                         srcimg[_i(x + 1, y, src_width, src_height)] + // Right
+                         srcimg[_i(x, y + 1, src_width, src_height)] + // Up
+                         srcimg[_i(x, y - 1, src_width, src_height)]); // Down
+                    g = g &gt;&gt; 2; // Divide by 4
+                    b = srcimg[_i(x, y, src_width, src_height)]; // We&#39;re at blue pixel
+
+                    //Previous implementation converted to RGB565
+                    //dstimg[i++] = rgb_to_rgb565(clamp_i_u8(r), clamp_i_u8(g), clamp_i_u8(b));
+
+                    //Store the RGB 8-bit data directly
+                    dstimg[i].color_data.r = clamp_i_u8(r);
+                    dstimg[i].color_data.g = clamp_i_u8(g);
+                    dstimg[i++].color_data.b = clamp_i_u8(b);
+                    </pre>
+</div></div><h2 class="auto-cursor-target" id="Bayer:Iteration5-MainModifications">Main Modifications</h2><p>To utilize the new RGB888 version of the Bayer demosaicing, the main caller also needs to be updated to use the new data types.  Previously, following the call to bayer_bilinear_demosaicing_crop, the main would need to convert each pixel from RGB565 back to RGB888, perform the normalization for the CNN, then load the data into the FIFO.  With the data already in RGB888 format, only normalization needs to occur prior to loading.</p><div class="code panel pdl" style="border-width: 1px;"><div class="codeContent panelContent pdl">
+<pre class="syntaxhighlighter-pre" data-syntaxhighlighter-params="brush: cpp; gutter: false; theme: Confluence" data-theme="Confluence">    for (unsigned int x = start_x; x &lt; start_x + crop_x; x++) {
+ 
+        bayer_bilinear_demosaicing_crop(raw, w, h, x, start_y, rgb888_buffer, 1, crop_y);
+        /* ^ The crop is achieved here by offsetting where we start
+        iterating across the source image.  The rotation is achieved
+        by iterating across the image in the vertical (h) direction
+        down a single column.  Then, we feed the column into the CNN...
+        */
+
+        for (unsigned int y = 0; y &lt; crop_y; y++) { // ... here.
+            rgb888 = rgb888_buffer[y];
+            // Normalize from [0, 255] -&gt; [-128, 127]
+            rgb888.color_data.r = rgb888.color_data.r - 128;
+            rgb888.color_data.g = rgb888.color_data.g - 128;
+            rgb888.color_data.b = rgb888.color_data.b - 128;
+
+            // Loading data into the CNN fifo
+            while (((*((volatile uint32_t *)0x50000004) &amp; 1)) != 0)
+                ; // Wait for FIFO 0
+            *((volatile uint32_t *)0x50000008) = rgb888.pixel_data; // Write FIFO 0
+        }
+    }</pre>
+</div></div><h1 class="auto-cursor-target" id="Bayer:Iteration5-MeasuringResults">Measuring Results</h1><p>With the described changes incorporated, the 3 measurement points can be remeasured, and compared against the baseline.  Overall, the removal of the data type conversions saved about 3% in the total runtime.</p><div class="table-wrap"><table class="wrapped confluenceTable"><colgroup><col/><col/><col/></colgroup><tbody><tr><th colspan="1" class="confluenceTh"><br/></th><th colspan="1" class="confluenceTh">Iteration 5</th><th colspan="1" class="confluenceTh">Compared to Baseline</th></tr><tr><td style="text-align: left;" class="confluenceTd">Single row<span> </span><code>bayer_bilinear_demosaicing_crop<span> </span></code>call</td><td style="text-align: left;" class="confluenceTd"><strong>207us</strong></td><td colspan="1" style="text-align: left;" class="confluenceTd">215 - 207 = 8us (3.7%)</td></tr><tr><td style="text-align: left;" class="confluenceTd">Single row of Interpolation/Load </td><td style="text-align: left;" class="confluenceTd"><strong>307us</strong></td><td colspan="1" style="text-align: left;" class="confluenceTd">318 - 307 = 11us (3.4%)</td></tr><tr><td style="text-align: left;" class="confluenceTd">Complete Interpolation/Load Loop</td><td style="text-align: left;" class="confluenceTd"><strong>69.399ms</strong></td><td colspan="1" style="text-align: left;" class="confluenceTd">71.750 - 69.399 = 2.351ms (3.2%)</td></tr></tbody></table></div>
+                    </div>
+
+                                        
+                 
+                </div>             </div> 
+            <div id="footer" role="contentinfo">
+                <h2>Next: <a href="795307407.html">Bayer: Iteration 6</a></h2>
+            </div>
+        </div>     </body>
+</html>
