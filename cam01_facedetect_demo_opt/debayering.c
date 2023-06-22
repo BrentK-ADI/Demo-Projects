@@ -50,21 +50,11 @@ typedef struct
     uint8_t p3;
 } __attribute__((packed)) pixel_data_4_t;
 
-typedef struct 
-{
-        uint8_t red;
-        uint8_t green;
-        uint8_t blue;
-        uint8_t unused;
-} rgb888_data_t;
-
 typedef union 
 {
-    uint32_t wordData;
-    pixel_data_4_t byteData;
-} pixel_union_t;
-
-
+    pixel_data_4_t bytes;
+    uint32_t       word;
+}pixel_data_t;
 
 // Calculate color correction coefficients using gray world assumption.
 // This simple method uses the green channel to determine the coefficients.
@@ -180,55 +170,41 @@ void color_correct(uint8_t *srcimg, unsigned int w, unsigned int h)
 }
 
 
-static inline uint32_t FetchBayerValues(uint32_t* srcPtr, uint32_t split)
+
+static inline pixel_data_t FetchBayerValues(uint32_t* srcPtr, uint32_t split)
 {
-    uint32_t row;
-    row = *srcPtr;//Get the primary word
+    pixel_data_t row;
+    row.word = *srcPtr;//Get the primary word
     if( split )
     {
         //Get the next word, and join its lower half with the upper half of the
         //first word
-        row = __PKHBT(*(srcPtr+1), row); 
+        row.word = __PKHBT(*(srcPtr+1), row.word); 
 
         //Need to rotate 16 bits to align everything in order
-        row = __ROR_16(row);
+        row.word = __ROR_16(row.word);
     }
     return row;
 }
 
-void bayer_bilinear_demosaic_cols_to_rows_rgb888(uint8_t *srcimg, uint32_t src_width,
-                                                 uint32_t src_height, uint32_t col0,
-                                                 uint32_t row_offset, uint32_t* destRow0,
-                                                 uint32_t* destRow1, uint32_t destCount)
+
+void bayer_bilinear_demosaicing_col_to_row(uint8_t *srcimg, uint32_t src_width, uint32_t src_height,
+                                           uint32_t col, uint32_t h_offset, rgb888_pixel_t *dstimg0,
+                                           rgb888_pixel_t *dstimg1, uint32_t dst_count)
 {
-    uint32_t* srcPtr;
-    uint32_t  rowWidth;
-    uint32_t  isSplit;
+    pixel_data_t row0, row1, row2;
+    pixel_data_t vertAvg, horzAvg, tempRow, tempRow2;
+    uint32_t isSplit;
+    uint32_t* srcPtr32 = (uint32_t*)srcimg;
+    uint32_t rowStride4 = (src_width / 4);
 
-    pixel_union_t row0, row1, row2;
-    pixel_union_t vertAvg, tempRow, tempRow2, horzAvg;
-    rgb888_data_t pixel0, pixel1;
-    
-    assert((src_width & 0x3) == 0); //This assumes columns divisible by 4
-    assert((col0 & 0x1) == 0);
-    assert((row_offset & 0x1) == 0); //Need to start on an even row
-    
+    rgb888_pixel_t tempPixel;
 
-    //Long way about to get the starting pointer location
-    srcPtr = (uint32_t*)srcimg;        //Base address
-    rowWidth = (src_width / 4);        //Determine number of words per row
-    srcPtr += (rowWidth * row_offset); //Add in the row offset
-    srcPtr += (col0 / 4);              //Add in the column offset
-    
-    //Since we're rotating the clockwise, the last row read is actual the first
-    //column of the output pixel. So start at the bottom and work upwards
-    srcPtr += (rowWidth * destCount); 
+    assert((col & 1) == 0);      //Needs to be a even column
+    assert((h_offset & 1) == 0); //Needs to be an even row
+    assert((dst_count & 1) == 0); //Even number of dest pixels
 
-    //This algorithm generates 2 output rows are once from the 2 pixels that can
-    //be interpolated from 3 rows of 4-bayer pixels.
-    //Determine if the 2 output rows are generated from word aligned memory, or
-    //split across 2 words in memory
-    if( col0 & 0x2 )
+    if( col & 0x2 )
     {
         isSplit = 1;
     }
@@ -236,26 +212,62 @@ void bayer_bilinear_demosaic_cols_to_rows_rgb888(uint8_t *srcimg, uint32_t src_w
     {
         isSplit = 0;
     }
-
-    //Pre-load rows 1 and 2 before the loop
-    row2.wordData = FetchBayerValues(srcPtr + (rowWidth * 2),isSplit);
-    row1.wordData = FetchBayerValues(srcPtr + rowWidth, isSplit);
+    
+    //Preload Rows 2 and 1
+    srcPtr32 += ((src_width * (h_offset + dst_count +1)) + col) / 4;
+    row2 = FetchBayerValues(srcPtr32, col);
+    srcPtr32 -= rowStride4;
+    row1 = FetchBayerValues(srcPtr32, col);
+    srcPtr32 -= rowStride4;
 
     //Loop through the image. 2 rows will be worked on per iteration
-    for(int i = 0; i < destCount; i+=2 )
+    for(int i = 0; i < dst_count; i+=2 )
     {
         //Fill in row0
-        row0.wordData = FetchBayerValues(srcPtr, isSplit);
-        srcPtr -= rowWidth;
+        row0 = FetchBayerValues(srcPtr32, isSplit);
+        srcPtr32 -= rowStride4;
+
+        // Odd row (G R G R) - Row 0
+        //         (B G B G) - Row 1
+        //         (G R G R) - Row 2
+        vertAvg.word = __UHADD8(row0.word, row2.word);
+        tempRow.word = __PKHBT_LSL16(row1.word, vertAvg.word);
+        tempRow2.word = __PKHTB_ASR16(vertAvg.word, row1.word);
+        horzAvg.word = __UHADD8(tempRow.word, tempRow2.word);
+
+        //vertAvg is the average of the columns between row0 and row 2
+        //tempRow is [B[0] G[1] G[0] R[1]]
+        //tempRow2 is [B[2] G[3] G[2] R[3]];
+        //horzAvg is [ B[0&2] G[1&3] G_Corners[0&2] R Corners[1&3]]
+
+        //Now we have all the calculations needed to do our operations
+        tempPixel.color_data.g = row1.bytes.p1;
+        tempPixel.color_data.b = horzAvg.bytes.p0;
+        tempPixel.color_data.r = vertAvg.bytes.p1;
+        *dstimg0++ = tempPixel;
+
+        //Same note as above with regard to tricky assembly math
+        tempPixel.color_data.g = (uint8_t)(((uint16_t)horzAvg.bytes.p1 + (uint16_t)vertAvg.bytes.p2) >> 1);
+        tempPixel.color_data.b = row1.bytes.p2;
+        tempPixel.color_data.r = horzAvg.bytes.p3;
+        *dstimg1++ = tempPixel;
+        
+
+        //Shift the 3 row window up a row, fetching a new row 0
+        row2 = row1;
+        row1 = row0;
+        row0 = FetchBayerValues(srcPtr32, isSplit);
+        srcPtr32 -= rowStride4;
+
 
         // Even row (B G B G) - Row 0
         //          (G R G R) - Row 1
         //          (B G B G) - Row 2
         //Do some parallel math
-        vertAvg.wordData = __UHADD8(row0.wordData, row2.wordData);
-        tempRow.wordData = __PKHBT_LSL16(row1.wordData, vertAvg.wordData);
-        tempRow2.wordData = __PKHTB_ASR16(vertAvg.wordData, row1.wordData);
-        horzAvg.wordData = __UHADD8(tempRow.wordData, tempRow2.wordData);
+        vertAvg.word = __UHADD8(row0.word, row2.word);
+        tempRow.word = __PKHBT_LSL16(row1.word, vertAvg.word);
+        tempRow2.word = __PKHTB_ASR16(vertAvg.word, row1.word);
+        horzAvg.word = __UHADD8(tempRow.word, tempRow2.word);
 
         //vertAvg = [ Bs[0] Gs[1] Bs[2] Gs[3] ]
         //tempRow is [G[0] R[1] Bs[0] Gs[1]]
@@ -265,49 +277,18 @@ void bayer_bilinear_demosaic_cols_to_rows_rgb888(uint8_t *srcimg, uint32_t src_w
 
         //NOTE: All of these assignments can be done with some assembly to reduce
         //over head. To be continued....
-        pixel0.red = row1.byteData.p1;
-        pixel0.blue = horzAvg.byteData.p2;
+        tempPixel.color_data.r = row1.bytes.p1;
+        tempPixel.color_data.b = horzAvg.bytes.p2;
         //The following line can be done with some tricky assembly code. For now
         //Just do it with C for read ability.
         //Note casting is needed to ensure no overflow
-        pixel0.green = (uint8_t)(((uint16_t)horzAvg.byteData.p0 + (uint16_t)vertAvg.byteData.p1) >> 1);
-        *destRow0++ = *(uint32_t*)&pixel0;
+        tempPixel.color_data.g = (uint8_t)(((uint16_t)horzAvg.bytes.p0 + (uint16_t)vertAvg.bytes.p1) >> 1);
+        *dstimg0++ = tempPixel;
 
-        pixel1.green = row1.byteData.p2;
-        pixel1.blue = vertAvg.byteData.p2;
-        pixel1.red = horzAvg.byteData.p1;
-        *destRow1++ = *(uint32_t*)&pixel1;               
-
-        //Shift the 3 row window up a row, fetching a new row 0
-        row2 = row1;
-        row1 = row0;
-        row0.wordData = FetchBayerValues(srcPtr, isSplit);
-        srcPtr -= rowWidth;
-
-        // Odd row (G R G R) - Row 0
-        //         (B G B G) - Row 1
-        //         (G R G R) - Row 2
-        vertAvg.wordData = __UHADD8(row0.wordData, row2.wordData);
-        tempRow.wordData = __PKHBT_LSL16(row1.wordData, vertAvg.wordData);
-        tempRow2.wordData = __PKHTB_ASR16(vertAvg.wordData, row1.wordData);
-        horzAvg.wordData = __UHADD8(tempRow.wordData, tempRow2.wordData);
-
-        //vertAvg is the average of the columns between row0 and row 2
-        //tempRow is [B[0] G[1] G[0] R[1]]
-        //tempRow2 is [B[2] G[3] G[2] R[3]];
-        //horzAvg is [ B[0&2] G[1&3] G_Corners[0&2] R Corners[1&3]]
-
-        //Now we have all the calculations needed to do our operations
-        pixel0.green = row1.byteData.p1;
-        pixel0.blue = horzAvg.byteData.p0;
-        pixel0.red = vertAvg.byteData.p1;
-        *destRow0++ = *(uint32_t*)&pixel0;
-
-        //Same note as above with regard to tricky assembly math
-        pixel1.green = (uint8_t)(((uint16_t)horzAvg.byteData.p1 + (uint16_t)vertAvg.byteData.p2) >> 1);
-        pixel1.blue = row1.byteData.p2;
-        pixel1.red = horzAvg.byteData.p3;
-        *destRow1++ = *(uint32_t*)&pixel1;    
+        tempPixel.color_data.g = row1.bytes.p2;
+        tempPixel.color_data.b = vertAvg.bytes.p2;
+        tempPixel.color_data.r = horzAvg.bytes.p1;
+        *dstimg1++ = tempPixel;
         
         //Prep the next iteration
         row2 = row1;

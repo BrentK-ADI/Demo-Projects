@@ -36,7 +36,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
-#include "debayering.h"
+#include "debayering_iteration8.h"
 #include "mxc.h"
 #include "cnn.h"
 #include "mxc_errors.h"
@@ -49,7 +49,7 @@
 #define CROP_X 224
 #define CROP_Y 168
 
-//#define USE_STATIC_IMAGE
+#define USE_STATIC_IMAGE
 
 volatile uint32_t cnn_time; // Stopwatch
 extern volatile uint8_t face_detected;
