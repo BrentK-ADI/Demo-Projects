@@ -11,7 +11,7 @@ instructions, and utilizing SIMD operations.
 
 ## Iteration Walkthrough
 A walkthrough of all the iterations, as well as an overview of the algorithms 
-can be found in the HTML pages located in the doc folder, [here](doc/index.html)
+can be found in the HTML pages located in the doc folder, [here](https://htmlpreview.github.io/?https://raw.githubusercontent.com/BrentK-ADI/Demo-Projects/main/cam01_facedetect_demo_opt/doc/index.html)
 
 ## Hardware Setup
 This project utilizes the MAX78000 CAM01 Hardware running the FaceDetect demo.
