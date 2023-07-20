@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>Bayer: Iteration 6</title>
+        <link rel="stylesheet" href="styles/site.css" type="text/css" />
+        <META http-equiv="Content-Type" content="text/html; charset=UTF-8">
+    </head>
+
+    <body class="theme-default aui-theme-default">
+        <div id="page">
+            <div id="main" class="aui-page-panel">
+                <div id="main-header">
+                    <div id="breadcrumb-section">
+                        <ol id="breadcrumbs">
+                            <li class="first">
+                                <span><a href="index.html">Optimization by Example</a></span>
+                            </li>
+                                                    <li>
+                                <span><a href="Bayer-Interpolation_796177303.html">Bayer Interpolation</a></span>
+                            </li>
+                                                </ol>
+                    </div>
+                    <h1 id="title-heading" class="pagetitle">
+                                                <span id="title-text">
+                            Bayer: Iteration 6
+                        </span>
+                    </h1>
+                </div>
+
+                <div id="content" class="view">
+
+                    <div id="main-content" class="wiki-content group">
+                    <p>For iteration 6, the focus will be on removing unnecessary comparisons and other operators from within the loops.  The efforts here will be similar to AWB Iteration 1, which involved making assumptions regarding the input image format. Recalling the actions of iteration 1, the assumption was made that the input image had an even number of rows and columns in order to sequentially perform the operations and omit the checks on the X and Y odd/evenness.  Ideally we want to remove the same X and Y checks from the Bayer algorithm.</p><p>Based on the use case, assuming a even number of rows can be a safe bet, however, because we are transposing rows and columns, and accessing a single column at a time, making that assumption for the X axis is not feasible.  In order to optimize the functionality of the <code>bayer_bilinear_demosaicing_crop </code>function, the implementation will be tailored to <u>specifically</u> transpose a single column into a row with each call.  This results in the function no longer being a generic/universal library call, but rather specific to our application.  As discussed in previous iterations, trade offs between reusability and run time need to be made by the designer.</p><p><br/></p><h1 id="Bayer:Iteration6-RevisedLoopImplementation">Revised Loop Implementation</h1><p>The baseline loop implementation followed a typically row by column approach, where all elements of a single row are processed, at which point the row is incremented, and the processing is restarted. This is the correct approach for a non-rotated, traditional Bayer implementation. Given our new objective is to transpose a single column to a row while doing the interpolation, the 'X' value will be fixed, and only 1 loop will exist to iterate through the 'Y' values.  The new implementation is defined below. With the width being fixed a 1, that parameter was removed from the definition, and the total length of the output is named dst_count. </p><p>The original loop implementation also inadvertently had a mirroring effect on the image.  For a 90 degree clockwise rotation, in addition to the transposing of columns to rows, the rows must be iterated in reverse order, so that the pixel in the bottom left of the source image, becomes the pixel in the upper left of the rotated image.  To account for this, the Y loop will be run in reverse in the new implementation.</p><p>At this point no obvious optimizations have been done based on the use case, just refactoring.  The expectation was a similar run time as the previous iterations.  Unexpectedly, the total runtime of the algorithm loop was reduced to 48.348ms, <strong>21ms (or 30%) </strong>faster than the previous iteration! Similar to iteration 1 which saw a large improvement jump for a relatively minor change, it is the assumption that with a fixed value for X in each function call, as well as reducing the code to a single loop, to compiler was able to perform significant optimization in terms of memory access and stack usage.  Diving deeper into this change would be a good topic for a follow on discussion.  </p><div class="code panel pdl" style="border-width: 1px;"><div class="codeContent panelContent pdl">
+<pre class="syntaxhighlighter-pre" data-syntaxhighlighter-params="brush: cpp; gutter: false; theme: Confluence" data-theme="Confluence">void bayer_bilinear_demosaicing_col_to_row(uint8_t *srcimg, uint32_t src_width, uint32_t src_height,
+                                           uint32_t col, uint32_t h_offset, rgb888_pixel_t *dstimg,
+                                           uint32_t dst_count)
+{
+    unsigned int r, g, b = 0;
+    int i = 0;
+
+    //X is fixed at the column value
+    int x = col;
+
+    //Just need to loop vertically
+    for (int y = ((h_offset + dst_count) - 1); y &gt;= (int)h_offset; y--) {
+        if (!(y &amp; 1)) { // Even row (B G B G B G)
+            if (!(x &amp; 1)) { // Even column (B)
+                r = (srcimg[_i(x - 1, y + 1, src_width, src_height)] + // Top left
+                        srcimg[_i(x + 1, y + 1, src_width, src_height)] + // Top right
+                        srcimg[_i(x - 1, y - 1, src_width, src_height)] + // Bottom left
+                        srcimg[_i(x + 1, y - 1, src_width, src_height)]); // Bottom right
+                r = r &gt;&gt; 2; // Divide by 4
+                g = (srcimg[_i(x - 1, y, src_width, src_height)] + // Left
+                        srcimg[_i(x + 1, y, src_width, src_height)] + // Right
+                        srcimg[_i(x, y + 1, src_width, src_height)] + // Up
+                        srcimg[_i(x, y - 1, src_width, src_height)]); // Down
+                g = g &gt;&gt; 2; // Divide by 4
+                b = srcimg[_i(x, y, src_width, src_height)]; // We&#39;re at blue pixel
+
+                //Store the RGB 8-bit data directly
+                dstimg[i].color_data.r = clamp_i_u8(r);
+                dstimg[i].color_data.g = clamp_i_u8(g);
+                dstimg[i++].color_data.b = clamp_i_u8(b);
+                
+            } else { // Odd column (G)</pre>
+</div></div><h1 class="auto-cursor-target" id="Bayer:Iteration6-Optimizations">Optimizations</h1><h2 id="Bayer:Iteration6-CreatingSeparateLoops">Creating Separate Loops</h2><p>With the newly refined loop, optimizations similar to AWB Iteration 1 can be applied.  The first modification is based on the knowledge that the value of X is now fixed for the duration of the call to <code>bayer_bilinear_demosaicing_col_to_row</code>. With the value fixed, the number of checks for odd/evenness of X can be limited. The implementation of the function can actually be split into two loops, one for handling the situation when X is odd, the other even. With this change the total run time is reduced to 44.587ms, 3.761ms (7.8%) reduction from the refactoring to a single column function.</p><div class="code panel pdl" style="border-width: 1px;"><div class="codeContent panelContent pdl">
+<pre class="syntaxhighlighter-pre" data-syntaxhighlighter-params="brush: cpp; gutter: false; theme: Confluence" data-theme="Confluence">void bayer_bilinear_demosaicing_col_to_row(uint8_t *srcimg, uint32_t src_width, uint32_t src_height,
+                                           uint32_t col, uint32_t h_offset, rgb888_pixel_t *dstimg,
+                                           uint32_t dst_count)
+{
+    unsigned int r, g, b = 0;
+    int i = 0;
+
+    //X is fixed at the column value
+    int x = col;
+
+    if( x &amp; 1 ) //Odd column
+    {
+        //Just need to loop vertically
+        for (int y = ((h_offset + dst_count) - 1); y &gt;= (int)h_offset; y--) 
+        {
+            if (!(y &amp; 1)) // Even row (B G B G B G)
+            { 
+                r = (srcimg[_i(x, y + 1, src_width, src_height)] + // Up
+                        srcimg[_i(x, y - 1, src_width, src_height)]); // Down
+                r = r &gt;&gt; 1; // Divide by 2
+                g = srcimg[_i(x, y, src_width, src_height)]; // We&#39;re at green pixel
+                b = (srcimg[_i(x - 1, y, src_width, src_height)] + // Left
+                        srcimg[_i(x + 1, y, src_width, src_height)]); // Right
+                b = b &gt;&gt; 1; // Divide by 2
+
+                dstimg[i].color_data.r = clamp_i_u8(r);
+                dstimg[i].color_data.g = clamp_i_u8(g);
+                dstimg[i++].color_data.b = clamp_i_u8(b);
+            } 
+            else // Odd row (G R G R G R)
+            { 
+                r = srcimg[_i(x, y, src_width, src_height)]; // We&#39;re at red pixel
+                g = (srcimg[_i(x - 1, y, src_width, src_height)] + // Left
+                        srcimg[_i(x + 1, y, src_width, src_height)] + // Right
+                        srcimg[_i(x, y + 1, src_width, src_height)] + // Up
+                        srcimg[_i(x, y - 1, src_width, src_height)]); // Down
+                g = g &gt;&gt; 2; // Divide by 4
+                b = (srcimg[_i(x - 1, y + 1, src_width, src_height)] + // Top left
+                        srcimg[_i(x + 1, y + 1, src_width, src_height)] + // Top right
+                        srcimg[_i(x - 1, y - 1, src_width, src_height)] + // Bottom left
+                        srcimg[_i(x + 1, y - 1, src_width, src_height)]); // Bottom right
+                b = b &gt;&gt; 2; // Divide by 4
+
+                dstimg[i].color_data.r = clamp_i_u8(r);
+                dstimg[i].color_data.g = clamp_i_u8(g);
+                dstimg[i++].color_data.b = clamp_i_u8(b);
+            }
+        }
+    } 
+    else //Even Column
+    {
+        //Just need to loop vertically
+        for (int y = ((h_offset + dst_count) - 1); y &gt;= (int)h_offset; y--) 
+        {
+            if (!(y &amp; 1)) // Even row (B G B G B G)
+            { 
+                r = (srcimg[_i(x - 1, y + 1, src_width, src_height)] + // Top left
+                        srcimg[_i(x + 1, y + 1, src_width, src_height)] + // Top right
+                        srcimg[_i(x - 1, y - 1, src_width, src_height)] + // Bottom left
+                        srcimg[_i(x + 1, y - 1, src_width, src_height)]); // Bottom right
+                r = r &gt;&gt; 2; // Divide by 4
+                g = (srcimg[_i(x - 1, y, src_width, src_height)] + // Left
+                        srcimg[_i(x + 1, y, src_width, src_height)] + // Right
+                        srcimg[_i(x, y + 1, src_width, src_height)] + // Up
+                        srcimg[_i(x, y - 1, src_width, src_height)]); // Down
+                g = g &gt;&gt; 2; // Divide by 4
+                b = srcimg[_i(x, y, src_width, src_height)]; // We&#39;re at blue pixel
+
+                //Store the RGB 8-bit data directly
+                dstimg[i].color_data.r = clamp_i_u8(r);
+                dstimg[i].color_data.g = clamp_i_u8(g);
+                dstimg[i++].color_data.b = clamp_i_u8(b);
+            } 
+            else // Odd row (G R G R G R)
+            { 
+                r = (srcimg[_i(x - 1, y, src_width, src_height)] + // Left
+                        srcimg[_i(x + 1, y, src_width, src_height)]); // Right
+                r = r &gt;&gt; 1; // Divide by 2
+                g = srcimg[_i(x, y, src_width, src_height)]; // We&#39;re at green pixel
+                b = (srcimg[_i(x, y + 1, src_width, src_height)] + // Up
+                        srcimg[_i(x, y - 1, src_width, src_height)]); // Down
+                b = b &gt;&gt; 1; // Divide by 2
+
+                dstimg[i].color_data.r = clamp_i_u8(r);
+                dstimg[i].color_data.g = clamp_i_u8(g);
+                dstimg[i++].color_data.b = clamp_i_u8(b);
+            }
+        }
+    }
+}</pre>
+</div></div><h2 id="Bayer:Iteration6-EliminatingYChecks">Eliminating Y Checks</h2><p>The next obvious optimization is to eliminate the checks of the Y value.  Similar to the AWB/Color correction implementation, if the assumption is made that the first row (h_offset) is always even, and the number of rows processes (dst_count) is even, then processing an even row will always be followed by processing an odd row.  So much like the AWB improvements, the Y checks can be eliminated from this loop, and replaced by consecutive operations.  A while loop replaces the for loops, performing two y block per cycle. With this change the total run time is reduced to 41.649ms, 2.938ms (6.5%) reduction from the previous change.</p><div class="code panel pdl" style="border-width: 1px;"><div class="codeContent panelContent pdl">
+<pre class="syntaxhighlighter-pre" data-syntaxhighlighter-params="brush: cpp; gutter: false; theme: Confluence" data-theme="Confluence">void bayer_bilinear_demosaicing_col_to_row(uint8_t *srcimg, uint32_t src_width, uint32_t src_height,
+                                           uint32_t col, uint32_t h_offset, rgb888_pixel_t *dstimg,
+                                           uint32_t dst_count)
+{
+    unsigned int r, g, b = 0;
+    int i = 0;
+
+    //X is fixed at the column value
+    int x = col;
+
+    if( x &amp; 1 ) //Odd column
+    {
+        //Just need to loop vertically
+        int y = (h_offset + dst_count);
+        while( y &gt; (int)h_offset)
+        {
+            r = (srcimg[_i(x, y + 1, src_width, src_height)] + // Up
+                    srcimg[_i(x, y - 1, src_width, src_height)]); // Down
+            r = r &gt;&gt; 1; // Divide by 2
+            g = srcimg[_i(x, y, src_width, src_height)]; // We&#39;re at green pixel
+            b = (srcimg[_i(x - 1, y, src_width, src_height)] + // Left
+                    srcimg[_i(x + 1, y, src_width, src_height)]); // Right
+            b = b &gt;&gt; 1; // Divide by 2
+
+            dstimg[i].color_data.r = clamp_i_u8(r);
+            dstimg[i].color_data.g = clamp_i_u8(g);
+            dstimg[i++].color_data.b = clamp_i_u8(b);
+            y--;
+
+            r = srcimg[_i(x, y, src_width, src_height)]; // We&#39;re at red pixel
+            g = (srcimg[_i(x - 1, y, src_width, src_height)] + // Left
+                    srcimg[_i(x + 1, y, src_width, src_height)] + // Right
+                    srcimg[_i(x, y + 1, src_width, src_height)] + // Up
+                    srcimg[_i(x, y - 1, src_width, src_height)]); // Down
+            g = g &gt;&gt; 2; // Divide by 4
+            b = (srcimg[_i(x - 1, y + 1, src_width, src_height)] + // Top left
+                    srcimg[_i(x + 1, y + 1, src_width, src_height)] + // Top right
+                    srcimg[_i(x - 1, y - 1, src_width, src_height)] + // Bottom left
+                    srcimg[_i(x + 1, y - 1, src_width, src_height)]); // Bottom right
+            b = b &gt;&gt; 2; // Divide by 4
+
+            dstimg[i].color_data.r = clamp_i_u8(r);
+            dstimg[i].color_data.g = clamp_i_u8(g);
+            dstimg[i++].color_data.b = clamp_i_u8(b);
+            y--;
+        }
+    } 
+    else //Even Column
+    {
+        //Just need to loop vertically
+        int y = (h_offset + dst_count);
+        while( y &gt; (int)h_offset)
+        {
+            r = (srcimg[_i(x - 1, y + 1, src_width, src_height)] + // Top left
+                    srcimg[_i(x + 1, y + 1, src_width, src_height)] + // Top right
+                    srcimg[_i(x - 1, y - 1, src_width, src_height)] + // Bottom left
+                    srcimg[_i(x + 1, y - 1, src_width, src_height)]); // Bottom right
+            r = r &gt;&gt; 2; // Divide by 4
+            g = (srcimg[_i(x - 1, y, src_width, src_height)] + // Left
+                    srcimg[_i(x + 1, y, src_width, src_height)] + // Right
+                    srcimg[_i(x, y + 1, src_width, src_height)] + // Up
+                    srcimg[_i(x, y - 1, src_width, src_height)]); // Down
+            g = g &gt;&gt; 2; // Divide by 4
+            b = srcimg[_i(x, y, src_width, src_height)]; // We&#39;re at blue pixel
+
+            //Store the RGB 8-bit data directly
+            dstimg[i].color_data.r = clamp_i_u8(r);
+            dstimg[i].color_data.g = clamp_i_u8(g);
+            dstimg[i++].color_data.b = clamp_i_u8(b);
+            y--;
+            
+            r = (srcimg[_i(x - 1, y, src_width, src_height)] + // Left
+                    srcimg[_i(x + 1, y, src_width, src_height)]); // Right
+            r = r &gt;&gt; 1; // Divide by 2
+            g = srcimg[_i(x, y, src_width, src_height)]; // We&#39;re at green pixel
+            b = (srcimg[_i(x, y + 1, src_width, src_height)] + // Up
+                    srcimg[_i(x, y - 1, src_width, src_height)]); // Down
+            b = b &gt;&gt; 1; // Divide by 2
+
+            dstimg[i].color_data.r = clamp_i_u8(r);
+            dstimg[i].color_data.g = clamp_i_u8(g);
+            dstimg[i++].color_data.b = clamp_i_u8(b);
+            y--;
+        }
+    }
+}</pre>
+</div></div><h2 class="auto-cursor-target" id="Bayer:Iteration6-RemovingtheClamps">Removing the Clamps</h2><p>The final change for this iteration is removing the clamp_i_u8 calls when assigning the data to the RGB888.  The elimination of this can be done due to the math being performed.  In all calls, the math performed can <u>not</u> exceed the limits of an 8-bit value based on the division occurring. During this change, the writing to dstimg is updated to use a temporary variable and pointer based addressing of the destination.  While this modification reduces function calls and provides a cleaner code flow, there was no change in the run-time performance of the algorithm.</p><div class="code panel pdl" style="border-width: 1px;"><div class="codeContent panelContent pdl">
+<pre class="syntaxhighlighter-pre" data-syntaxhighlighter-params="brush: cpp; gutter: false; theme: Confluence" data-theme="Confluence">void bayer_bilinear_demosaicing_col_to_row(uint8_t *srcimg, uint32_t src_width, uint32_t src_height,
+                                           uint32_t col, uint32_t h_offset, rgb888_pixel_t *dstimg,
+                                           uint32_t dst_count)
+{
+    unsigned int r, g, b = 0;
+    int i = 0;
+    rgb888_pixel_t tempPixel;
+    rgb888_pixel_t* outPtr = dstimg;
+
+    //X is fixed at the column value
+    int x = col;
+
+    if( x &amp; 1 ) //Odd column
+    {
+        //Just need to loop vertically
+        int y = (h_offset + dst_count);
+        while( y &gt; (int)h_offset)
+        {
+            r = (srcimg[_i(x, y + 1, src_width, src_height)] + // Up
+                    srcimg[_i(x, y - 1, src_width, src_height)]); // Down
+            r = r &gt;&gt; 1; // Divide by 2
+            g = srcimg[_i(x, y, src_width, src_height)]; // We&#39;re at green pixel
+            b = (srcimg[_i(x - 1, y, src_width, src_height)] + // Left
+                    srcimg[_i(x + 1, y, src_width, src_height)]); // Right
+            b = b &gt;&gt; 1; // Divide by 2
+            tempPixel.color_data.r = (uint8_t)r;
+            tempPixel.color_data.g = (uint8_t)g;
+            tempPixel.color_data.b = (uint8_t)b;
+            *dstimg++ = tempPixel;            
+            y--;
+
+</pre>
+</div></div><h1 class="auto-cursor-target" id="Bayer:Iteration6-MeasuringResults">Measuring Results</h1><p>With the described changes incorporated, the 3 measurement points can be remeasured, and compared against the baseline. </p><div class="table-wrap"><table class="relative-table wrapped confluenceTable" style="width: 54.4158%;"><thead><tr><th colspan="1" style="text-align: left;" class="confluenceTh"><br/></th><th colspan="1" style="text-align: left;" class="confluenceTh"><p>Iteration 6</p></th><th colspan="1" class="confluenceTh">Compared to Iteration 5</th><th colspan="1" style="text-align: left;" class="confluenceTh"><p>Compared to Baseline</p></th></tr></thead><colgroup><col style="width: 38.2442%;"/><col style="width: 9.08174%;"/><col style="width: 26.2361%;"/><col style="width: 26.4379%;"/></colgroup><tbody><tr><td style="text-align: left;" class="confluenceTd">Single row<span> </span><code>bayer_bilinear_demosaicing_crop<span> </span></code>call</td><td style="text-align: left;" class="confluenceTd"><strong>88us</strong></td><td colspan="1" class="confluenceTd">207 - 88 = 119us (57.5%)</td><td colspan="1" style="text-align: left;" class="confluenceTd">215 - 88 = 127us (59%)</td></tr><tr><td style="text-align: left;" class="confluenceTd">Single row of Interpolation/Load </td><td style="text-align: left;" class="confluenceTd"><strong>189us</strong></td><td colspan="1" class="confluenceTd">307 - 189 =  118 us (38.4%)</td><td colspan="1" style="text-align: left;" class="confluenceTd">318 - 189 = 129us (40.5%)</td></tr><tr><td style="text-align: left;" class="confluenceTd">Complete Interpolation/Load Loop</td><td style="text-align: left;" class="confluenceTd"><strong>41.649ms</strong></td><td colspan="1" class="confluenceTd">69.399 -41.649 = 27.75ms (39.9%)</td><td colspan="1" style="text-align: left;" class="confluenceTd">71.750 - 41.649 =30.101 ms (41.9%)</td></tr></tbody></table></div>
+                    </div>
+
+                                        
+                 
+                </div>             </div> 
+            <div id="footer" role="contentinfo">
+                <h2>Next: <a href="795307751.html">Bayer: Iteration 7</a></h2>
+            </div>
+        </div>     </body>
+</html>

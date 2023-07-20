@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>AWB: Iteration 3</title>
+        <link rel="stylesheet" href="styles/site.css" type="text/css" />
+        <META http-equiv="Content-Type" content="text/html; charset=UTF-8">
+    </head>
+
+    <body class="theme-default aui-theme-default">
+        <div id="page">
+            <div id="main" class="aui-page-panel">
+                <div id="main-header">
+                    <div id="breadcrumb-section">
+                        <ol id="breadcrumbs">
+                            <li class="first">
+                                <span><a href="index.html">Optimization by Example</a></span>
+                            </li>
+                                                    <li>
+                                <span><a href="789693407.html">Auto White Balance / Color Correction</a></span>
+                            </li>
+                                                </ol>
+                    </div>
+                    <h1 id="title-heading" class="pagetitle">
+                                                <span id="title-text">
+                            AWB: Iteration 3
+                        </span>
+                    </h1>
+                </div>
+
+                <div id="content" class="view">
+
+                    <div id="main-content" class="wiki-content group">
+                    <p><span style="color: rgb(23,43,77);">This iteration of the AWB optimization utilizes the codebase from the completion of <a href="789693561.html">Iteration 2.</a>  Much like Iteration 1 which focused on reducing instructions, this iteration will focus on reducing instructions in the form of memory accesses.  The target processor, like many microcontrollers, has native 32-bit data types.  As a result, registers, memory accesses and other elements naturally occur within 32-bit chunks, regardless if the operation only needs 8- or 16-bits.  Because of this, each access of the image data in our algorithm, while working on just 1 pixel (8-bits) is always fetching or writing 4 pixels. </span></p><p><span style="color: rgb(23,43,77);">In order to effectively take advantage of this concept, one of the existing assumptions must be modified.  Previously both rows and columns needed to be an even number.  To efficiently read/write 4 pixels at a time, the assumption needs to ensure the number of columns is always divisible by 4, providing an even stride length when accessing the row data.  This still remains a relatively universal assumption, as most sensors have column counts divisible by 4.</span></p><h1 id="AWB:Iteration3-ScaleCalculation"><span style="color: rgb(23,43,77);">Scale Calculation</span></h1><p><span style="color: rgb(23,43,77);">There are several ways to go about accessing individual data elements from a read; either by an array, structure or bit masking/shifting.  For this iteration a structure will be used to hold the 4 data bytes. Since the assumption guarantees 4 byte boundaries for the columns, the traversing of the frame data can be done via incrementing pointers to the defined 4-pixel struct, eliminating the need for indexing and using the <code>_i</code> function.</span></p><p><span style="color: rgb(23,43,77);">First the new data structure needs to be defined.  Noticed the __attribute__((packed)) inclusion.  Given the structure is 4 individual bytes, it is not expected that any unexpected alignment would occur, however, this <u>ensures </u>that the 4 bytes are packed into a single 32-bit word.</span></p><div class="code panel pdl" style="border-width: 1px;"><div class="codeContent panelContent pdl">
+<pre class="syntaxhighlighter-pre" data-syntaxhighlighter-params="brush: cpp; gutter: false; theme: Confluence" data-theme="Confluence">typedef struct 
+{
+    uint8_t p0;
+    uint8_t p1;
+    uint8_t p2;
+    uint8_t p3;
+} __attribute__((packed)) pixel_data_4_t;</pre>
+</div></div><p><span style="color: rgb(23,43,77);">And now the modifications to the <code>calc_correction_simple</code>.  With these changes, the runtime is now down to <strong>7.713 ms</strong>, a 2.518ms (24.6%) reduction from the end of Iteration 2.</span></p><div class="code panel pdl" style="border-width: 1px;"><div class="codeContent panelContent pdl">
+<pre class="syntaxhighlighter-pre" data-syntaxhighlighter-params="brush: cpp; gutter: false; theme: Confluence" data-theme="Confluence">void calc_correction_simple(uint8_t *bayer_pattern, unsigned int w, unsigned int h,
+                            uint16_t *out_coeff_r, uint16_t *out_coeff_b)
+{
+    unsigned int r_avg = 0, g_avg = 0, b_avg = 0;
+    unsigned int count = 0;
+    pixel_data_4_t* pixelData = (pixel_data_4_t*)bayer_pattern;
+    
+    assert((w &amp; 0x3) == 0); //This assumes columns divisible by 4
+    assert((h &amp; 0x1) == 0); //This assumes even rows
+
+
+    for( int y = 0; y &lt; (h / 2); y++)
+    {
+        //Even Row Loop
+        for( int x = 0; x &lt; (w / 4); x++)
+        {  
+            // Even row (B G B G B G)            
+            b_avg += pixelData-&gt;p0;
+            g_avg += pixelData-&gt;p1;
+            b_avg += pixelData-&gt;p2;
+            g_avg += pixelData-&gt;p3;
+            pixelData++;            
+        }
+
+        for( int x = 0; x &lt; (w / 4); x++)
+        {  
+            // Odd row (G R G R G R)
+            g_avg += pixelData-&gt;p0;
+            r_avg += pixelData-&gt;p1;
+            g_avg += pixelData-&gt;p2;
+            r_avg += pixelData-&gt;p3;
+            pixelData++;
+        }
+    }
+
+    //Get half count for green
+    count = (w * h) &gt;&gt; 1;
+    g_avg = g_avg / count;
+
+    //Halve again for blue and red
+    count = count &gt;&gt; 1;
+    r_avg = r_avg / count;
+    b_avg = b_avg / count;
+
+    *out_coeff_r = (uint16_t)(g_avg &lt;&lt; 8) / r_avg;
+    *out_coeff_b = (uint16_t)(g_avg &lt;&lt; 8) / b_avg;
+}</pre>
+</div></div><h1 id="AWB:Iteration3-ApplyingtheCorrection"><span style="color: rgb(23,43,77);">Applying the Correction</span></h1><p><span style="color: rgb(23,43,77);">Similar to the scale calculation, the reduced memory access approach is applied to the loop performing the actual correction. The difference in this implementation is the use of a temporary pixel_data_4_t variable.  Since 2 pixels need to be scaled within a single word, it is not guaranteed the compiler wont perform 2 memory writes. This approach attempts to facilitate keeping data in registers until a write is absolutely necessary.  With this change, the execution time is reduced to <strong>6.456 ms.</strong></span></p><div class="code panel pdl" style="border-width: 1px;"><div class="codeContent panelContent pdl">
+<pre class="syntaxhighlighter-pre" data-syntaxhighlighter-params="brush: cpp; gutter: false; theme: Confluence" data-theme="Confluence">void color_correct(uint8_t *srcimg, unsigned int w, unsigned int h)
+{
+    uint16_t coeff_r = 0, coeff_b = 0;
+    uint32_t scaledVal;
+    pixel_data_4_t* pixelDataPtr = (pixel_data_4_t*)srcimg;
+    pixel_data_4_t tempPixels;
+
+    assert((w &amp; 0x3) == 0); //This assumes columns divisible by 4
+    assert((h &amp; 0x1) == 0); //This assumes even rows
+    
+    calc_correction_simple(srcimg, w, h, &amp;coeff_r, &amp;coeff_b);
+
+    // Apply color correction before debayering, helps slightly to reduce artifacts
+    for( int y = 0; y &lt; (h / 2); y++)
+    {
+        for (int x = 0; x &lt; (w / 4); x++) 
+        {
+            tempPixels = *pixelDataPtr;
+            scaledVal = coeff_b * tempPixels.p0;
+            tempPixels.p0 = (scaledVal &amp; 0xFFFF0000) ? 255 : 
+                                (uint8_t)(scaledVal &gt;&gt; 8);
+            scaledVal = coeff_b * tempPixels.p2;
+            tempPixels.p2 = (scaledVal &amp; 0xFFFF0000) ? 255 : 
+                                (uint8_t)(scaledVal &gt;&gt; 8);            
+            *pixelDataPtr++ = tempPixels;                    
+        }
+
+        for (int x = 0; x &lt; (w / 4); x++) 
+        {
+            tempPixels = *pixelDataPtr;
+            scaledVal = coeff_r * tempPixels.p1;
+            tempPixels.p1 = (scaledVal &amp; 0xFFFF0000) ? 255 : 
+                                (uint8_t)(scaledVal &gt;&gt; 8);
+            scaledVal = coeff_r * tempPixels.p3;
+            tempPixels.p3 = (scaledVal &amp; 0xFFFF0000) ? 255 : 
+                                (uint8_t)(scaledVal &gt;&gt; 8);            
+            *pixelDataPtr++ = tempPixels;       
+        }
+    }
+}</pre>
+</div></div><h1 id="AWB:Iteration3-Summary"><span style="color: rgb(23,43,77);">Summary</span></h1><p><span style="color: rgb(23,43,77);">By taking advantage of, and aligning the algorithms memory accesses with the native size of the host processor, this iteration's run time has been reduced to <strong>6.456 ms</strong>, a 3.775 ms  (58%) reduction from the previous iteration, and a 20.632ms (76%) reduction from the original baseline.</span></p>
+                    </div>
+
+                                        
+                 
+                </div>             </div> 
+            <div id="footer" role="contentinfo">
+                <h2>Next: <a href="789693684.html">AWB: Iteration 4</a></h2>
+            </div>
+        </div>     </body>
+</html>

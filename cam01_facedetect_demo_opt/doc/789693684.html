@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>AWB: Iteration 4</title>
+        <link rel="stylesheet" href="styles/site.css" type="text/css" />
+        <META http-equiv="Content-Type" content="text/html; charset=UTF-8">
+    </head>
+
+    <body class="theme-default aui-theme-default">
+        <div id="page">
+            <div id="main" class="aui-page-panel">
+                <div id="main-header">
+                    <div id="breadcrumb-section">
+                        <ol id="breadcrumbs">
+                            <li class="first">
+                                <span><a href="index.html">Optimization by Example</a></span>
+                            </li>
+                                                    <li>
+                                <span><a href="789693407.html">Auto White Balance / Color Correction</a></span>
+                            </li>
+                                                </ol>
+                    </div>
+                    <h1 id="title-heading" class="pagetitle">
+                                                <span id="title-text">
+                            AWB: Iteration 4
+                        </span>
+                    </h1>
+                </div>
+
+                <div id="content" class="view">
+
+                    <div id="main-content" class="wiki-content group">
+                    <p>So far, the iterations of the AWB algorithm have focused on optimizing logic as well as memory accesses, all while remaining platform independent.</p><p>This iteration introduces using the ARM Cortex-M4 SIMD (Single Instruction, Multiple Data) instructions.  SIMD instructions allow multiple arithmetic operations to happen in parallel in a single execution cycle.  Different target processors have different variants of SIMD (or none at all).  The instruction set used in this exercise is specific to the ARM Cortex M4 and M7 processors.  Other Cortex-Ms (such as the M0 and M3) have no SIMD at all).  Similarly, the Cortex-A series implements SIMD through the NEON sub-system, and Intel processors have a sub-system called SSE.</p><p>While Cortex-M4 processors are relatively ubiquitous, this level of optimization begins to remove platform independence and reusability from the source code, and should only be considered when needed to gain the absolute most efficiency from a system.</p><h1 id="AWB:Iteration4-Cortex-M4SIMDOverview">Cortex-M4 SIMD Overview</h1><p>Details on the features of the Cortex-M4 SIMD instructions can be found in the Whitepaper &quot;<a class="external-link" href="https://community.arm.com/cfs-file/__key/communityserver-blogs-components-weblogfiles/00-00-00-21-42/7563.ARM-white-paper-_2D00_-DSP-capabilities-of-Cortex_2D00_M4-and-Cortex_2D00_M7.pdf" rel="nofollow">The DSP Capabilities of the ARM Cortex-M4 and Cortex-M7 Processors</a>&quot;</p><h1 id="AWB:Iteration4-ScaleCalculation">Scale Calculation</h1><p>Revisiting the Scale calculation, 2 specific SIMD instructions will be utilized: uxtab16 and uxtah.</p><p>uxtab16 converts the bytes at location 0 and 2 of a 32-bit word (optionally rotated before extracting) into 16-bit values, then sums in parallel, the 2 16-bits words with another pair of 16-bits words, and writes out the result. <span class="confluence-embedded-file-wrapper confluence-embedded-manual-size"><img class="confluence-embedded-image" draggable="false" height="72" src="attachments/789693684/789693711.png" data-image-src="attachments/789693684/789693711.png" data-unresolved-comment-count="0" data-linked-resource-id="789693711" data-linked-resource-version="1" data-linked-resource-type="attachment" data-linked-resource-default-alias="uxtab16.PNG" data-base-url="https://confluence.analog.com" data-linked-resource-content-type="image/png" data-linked-resource-container-id="789693684" data-linked-resource-container-version="4"></span></p><p>Similarly, uxtah converts the lower 16-bit value of a 32-bit word (optionally rotated before extracting) into a 32-bit word, sums with another 32-bit word, and writes out the result.</p><p><span class="confluence-embedded-file-wrapper confluence-embedded-manual-size"><img class="confluence-embedded-image" draggable="false" height="52" src="attachments/789693684/789693715.png" data-image-src="attachments/789693684/789693715.png" data-unresolved-comment-count="0" data-linked-resource-id="789693715" data-linked-resource-version="1" data-linked-resource-type="attachment" data-linked-resource-default-alias="uxtah.PNG" data-base-url="https://confluence.analog.com" data-linked-resource-content-type="image/png" data-linked-resource-container-id="789693684" data-linked-resource-container-version="4"></span></p><p>Using 2 calls to <code>uxtab16</code> (one rotated), four running 16-bit sums of pixel values can be done in parallel. With a ceiling of 16-bits, that allows for a minimum of 256 additions before rolling over. Given there are 4 sums in parallel, a total pixel count of 1024 is possible before overflowing.  This limit defines a new assumption, the width of the source image must be 1024 pixels wide, or less.  For applications which have images larger than 1024 wide, the implementation can easily be modified to accommodate the extra width.</p><p>Once a row is complete, there are now four 16-bit pixel sums.  Using the <code>uxtab</code> instruction, each of the 16-bit values can be extracted and added to the total running count for that color channel.</p><p>In order to simplify implementation of these instructions, inline functions were created to provide an intuitive API. </p><div class="confluence-information-macro confluence-information-macro-information"><span class="aui-icon aui-icon-small aui-iconfont-info confluence-information-macro-icon"></span><div class="confluence-information-macro-body"><p>Note: GCC comes with predefined intrinsics for some, but not all SIMD instruction. Specifically instructions with optional rotation values are not defined.  Defining all of the needed instructions as inlines creates more uniform code.</p></div></div><div class="code panel pdl" style="border-width: 1px;"><div class="codeContent panelContent pdl">
+<pre class="syntaxhighlighter-pre" data-syntaxhighlighter-params="brush: cpp; gutter: false; theme: Confluence" data-theme="Confluence">/**
+ * UXTAB16{&lt;c&gt;}{&lt;q&gt;} {&lt;Rd&gt;,} &lt;Rn&gt;, &lt;Rm&gt; {, &lt;rotation&gt;}
+ * rotated = ROR(R[m], rotation); 
+ * R[d]&lt;15:0&gt; = R[n]&lt;15:0&gt; + ZeroExtend(rotated&lt;7:0&gt;, 16);
+ * R[d]&lt;31:16&gt; = R[n]&lt;31:16&gt; + ZeroExtend(rotated&lt;23:16&gt;, 16);
+ * 
+ * Rn = Fixed16, 2x 16-bit
+ * Rm = Fixed8, 2x 8-bits zero extended
+ */
+inline uint32_t __UXTAB16(uint32_t fixed16, uint32_t fixed8 )
+{
+    uint32_t result;
+
+    asm(&quot;uxtab16 %0, %1, %2&quot; : &quot;=r&quot; (result) : &quot;r&quot; (fixed16), &quot;r&quot; (fixed8) );
+    return(result);
+}
+
+/**
+ * UXTAB16{&lt;c&gt;}{&lt;q&gt;} {&lt;Rd&gt;,} &lt;Rn&gt;, &lt;Rm&gt; {, &lt;rotation&gt;}
+ * rotated = ROR(R[m], rotation); 
+ * R[d]&lt;15:0&gt; = R[n]&lt;15:0&gt; + ZeroExtend(rotated&lt;7:0&gt;, 16);
+ * R[d]&lt;31:16&gt; = R[n]&lt;31:16&gt; + ZeroExtend(rotated&lt;23:16&gt;, 16);
+ * 
+ * Rn = Fixed16, 2x 16-bit
+ * Rm = Rotated8, 2x 8-bits zero extended
+ */
+inline uint32_t __UXTAB16_ROR8(uint32_t fixed16, uint32_t rotated8 )
+{
+    uint32_t result;
+    asm(&quot;uxtab16 %0, %1, %2, ROR #8&quot; : &quot;=r&quot; (result) : &quot;r&quot; (fixed16), &quot;r&quot; (rotated8) );
+    return(result);
+}
+
+/**
+ * UXTAH{&lt;c&gt;}{&lt;q&gt;} {&lt;Rd&gt;,} &lt;Rn&gt;, &lt;Rm&gt; {, &lt;rotation&gt;}
+ * rotated = ROR(R[m], rotation);
+ * R[d] = R[n] + ZeroExtend(rotated&lt;15:0&gt;, 32);
+ * 
+ * Rn = Fixed32, 1x 32-bit
+ * Rm = Fixed16, 1x 16-bits zero extended
+ */
+inline uint32_t __UXTAH(uint32_t fixed32, uint32_t rotated16 )
+{
+    uint32_t result;
+
+    asm(&quot;uxtah %0, %1, %2&quot; : &quot;=r&quot; (result) : &quot;r&quot; (fixed32), &quot;r&quot; (rotated16) );
+    return(result);
+}
+
+/**
+ * UXTAH{&lt;c&gt;}{&lt;q&gt;} {&lt;Rd&gt;,} &lt;Rn&gt;, &lt;Rm&gt; {, &lt;rotation&gt;}
+ * rotated = ROR(R[m], rotation);
+ * R[d] = R[n] + ZeroExtend(rotated&lt;15:0&gt;, 32);
+ * 
+ * Rn = Fixed32, 1x 32-bit
+ * Rm = Rotated16, 1x 16-bits zero extended
+ */
+inline uint32_t __UXTAH_ROR16(uint32_t fixed32, uint32_t rotated16 )
+{
+    uint32_t result;
+
+    asm(&quot;uxtah %0, %1, %2, ROR #16&quot; : &quot;=r&quot; (result) : &quot;r&quot; (fixed32), &quot;r&quot; (rotated16) );
+    return(result);
+}</pre>
+</div></div><p>The c<code>alc_correction_simple</code> function is modified to utilize the newly defined SIMD instruction inlines:</p><div class="code panel pdl" style="border-width: 1px;"><div class="codeContent panelContent pdl">
+<pre class="syntaxhighlighter-pre" data-syntaxhighlighter-params="brush: cpp; gutter: false; theme: Confluence" data-theme="Confluence">void calc_correction_simple(uint8_t *bayer_pattern, unsigned int w, unsigned int h,
+                            uint16_t *out_coeff_r, uint16_t *out_coeff_b)
+{
+    unsigned int r_avg = 0, g_avg = 0, b_avg = 0;
+    unsigned int count = 0;
+    uint32_t* pixelPtr = (uint32_t*)bayer_pattern;
+    uint32_t  dataVal;
+    uint32_t  counter1;
+    uint32_t  counter2;
+
+    assert((w &amp; 0x3) == 0); //This assumes columns divisible by 4
+    assert((w &lt;= 1024));    //More than 1024 will overflow
+    assert((h &amp; 0x1) == 0); //This assumes even rows
+
+    for( int y = 0; y &lt; (h / 2); y++)
+    {
+        //Even Row Loop
+        counter1 = 0;
+        counter2 = 0;
+        for( int x = 0; x &lt; (w / 4); x++)
+        {  
+            dataVal = *pixelPtr++;
+            //Accumuate bytes at 0 &amp; 2 locations
+            counter1 = __UXTAB16(counter1, dataVal);
+            //Accumuate bytes at 1 &amp; 3 locations
+            counter2 = __UXTAB16_ROR8(counter2, dataVal);
+        }
+
+        //Blue-Green Row
+        b_avg = __UXTAH(b_avg, counter1); //Get and add lower 16-bits
+        b_avg = __UXTAH_ROR16(b_avg, counter1); //Get and add upper 16-bits
+        g_avg = __UXTAH(g_avg, counter2); //Get and add lower 16-bits
+        g_avg = __UXTAH_ROR16(g_avg, counter2); //Get and add upper 16-bits
+
+        counter1 = 0;
+        counter2 = 0;
+        for( int x = 0; x &lt; (w / 4); x++)
+        {  
+            dataVal = *pixelPtr++;
+            //Accumuate bytes at 0 &amp; 2 locations
+            counter1 = __UXTAB16(counter1, dataVal);
+            //Accumuate bytes at 1 &amp; 3 locations
+            counter2 = __UXTAB16_ROR8(counter2, dataVal);
+        }
+        //Green-Red Row
+        g_avg = __UXTAH(g_avg, counter1); //Get and add lower 16-bits
+        g_avg = __UXTAH_ROR16(g_avg, counter1); //Get and add upper 16-bits 
+        r_avg = __UXTAH(r_avg, counter2); //Get and add lower 16-bits
+        r_avg = __UXTAH_ROR16(r_avg, counter2); //Get and add upper 16-bits
+    }
+
+    //Get half count for green
+    count = (w * h) &gt;&gt; 1;
+    g_avg = g_avg / count;
+
+    //Halve again for blue and red
+    count = count &gt;&gt; 1;
+    r_avg = r_avg / count;
+    b_avg = b_avg / count;
+
+    *out_coeff_r = (uint16_t)(g_avg &lt;&lt; 8) / r_avg;
+    *out_coeff_b = (uint16_t)(g_avg &lt;&lt; 8) / b_avg;
+}</pre>
+</div></div><h1 id="AWB:Iteration4-Summary">Summary</h1><p>With the inclusion of SIMD operations to parallelize the accumulation for the average calculation, the run time of the color correction is now <strong>4.933 ms</strong>, a 2.72ms (35%) improvement over the previous iteration, and 22.095ms (81.5%) overall against the baseline.</p><p><br/></p><p><br/></p>
+                    </div>
+
+
+                 
+                </div>             </div> 
+            <div id="footer" role="contentinfo">
+                <h2>Next: <a href="Bayer-Interpolation_796177303.html">Bayer Interpolation</a></h2>
+            </div>
+        </div>     </body>
+</html>
